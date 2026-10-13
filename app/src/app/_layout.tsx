@@ -10,11 +10,13 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 
+import { useUser } from '@/lib/session';
 import { colors } from '@/theme';
 
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
+  const user = useUser();
   const [loaded, error] = useFonts({
     DMSans_400Regular,
     DMSans_500Medium,
@@ -34,14 +36,21 @@ export default function RootLayout() {
     <>
       <StatusBar style="dark" />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="home" options={{ gestureEnabled: false }} />
-        <Stack.Screen name="merchants" />
-        <Stack.Screen name="pay" />
-        <Stack.Screen name="payment-success" options={{ gestureEnabled: false }} />
-        <Stack.Screen name="payment-failed" options={{ gestureEnabled: false }} />
-        <Stack.Screen name="redeem" />
-        <Stack.Screen name="transactions" />
+        {/* Signing in or out flips these guards and the router redirects:
+            to home (the first screen available) after sign-in, and back
+            to sign-in after logout. */}
+        <Stack.Protected guard={!user}>
+          <Stack.Screen name="index" />
+        </Stack.Protected>
+        <Stack.Protected guard={!!user}>
+          <Stack.Screen name="home" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="merchants" />
+          <Stack.Screen name="pay" />
+          <Stack.Screen name="payment-success" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="payment-failed" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="redeem" />
+          <Stack.Screen name="transactions" />
+        </Stack.Protected>
       </Stack>
     </>
   );

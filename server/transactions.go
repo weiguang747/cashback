@@ -14,10 +14,13 @@ import (
 	"cashback/server/internal/money"
 )
 
-// transactionStore is the part of the database the handlers need. The sqlc
+// store is the part of the database the handlers need. The sqlc
 // *db.Queries implements it; tests use a fake.
-type transactionStore interface {
-	ListTransactions(ctx context.Context, limit *int32) ([]db.ListTransactionsRow, error)
+type store interface {
+	GetUser(ctx context.Context, id string) (db.GetUserRow, error)
+	GetUserByEmail(ctx context.Context, email string) (db.GetUserByEmailRow, error)
+	ListAccounts(ctx context.Context, userID string) ([]db.ListAccountsRow, error)
+	ListTransactions(ctx context.Context, arg db.ListTransactionsParams) ([]db.ListTransactionsRow, error)
 }
 
 type transaction struct {
@@ -33,13 +36,13 @@ type transactionsResponse struct {
 	Transactions []transaction `json:"transactions"`
 }
 
-// listTransactions returns transactions newest first.
+// listTransactions returns the signed-in user's main-account transactions, newest first.
 // Optional query param: limit (positive integer).
-func listTransactions(store transactionStore) gin.HandlerFunc {
+func listTransactions(s store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var limit *int32
-		if s := c.Query("limit"); s != "" {
-			n, err := strconv.ParseInt(s, 10, 32)
+		if q := c.Query("limit"); q != "" {
+			n, err := strconv.ParseInt(q, 10, 32)
 			if err != nil || n < 1 {
 				httpx.Error(c, http.StatusBadRequest, "limit must be a positive integer")
 				return
@@ -48,7 +51,7 @@ func listTransactions(store transactionStore) gin.HandlerFunc {
 			limit = &n32
 		}
 
-		rows, err := store.ListTransactions(c.Request.Context(), limit)
+		rows, err := s.ListTransactions(c.Request.Context(), db.ListTransactionsParams{UserID: currentUser(c).ID, Limit: limit})
 		if err != nil {
 			log.Printf("list transactions: %v", err)
 			httpx.Error(c, http.StatusInternalServerError, "something went wrong")

@@ -1,5 +1,7 @@
-// Command seed fills an empty database with demo transactions placed
-// relative to "today", so the demo always shows recent activity.
+// Command seed fills the database with demo users, their accounts, and
+// transactions placed relative to "today", so the demo always shows recent
+// activity. Safe to re-run: users and accounts are upserted, and
+// transactions are only inserted into an empty table.
 //
 //	DATABASE_URL=postgres://... go run ./cmd/seed
 //
@@ -8,6 +10,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -16,29 +19,60 @@ import (
 	"cashback/server/internal/db"
 )
 
-// wib is Western Indonesia Time (UTC+7), where the demo user lives.
+// wib is Western Indonesia Time (UTC+7), where the demo users live.
 var wib = time.FixedZone("WIB", 7*60*60)
 
+const currency = "IDR"
+
 type demoTransaction struct {
+	account               string // "main" or "cashback"
 	name, description     string
 	amountMinor           int64 // sen: rupiah × 100
-	currency, kind        string
+	kind                  string
 	daysAgo, hour, minute int
 }
 
-var demoTransactions = []demoTransaction{
-	{"Kopi Kenangan", "Payment", -3_500_000, "IDR", "out", 0, 8, 42},
-	{"Sarah Wijaya", "Received", 50_000_000, "IDR", "in", 0, 7, 30},
-	{"Indomaret", "Payment", -24_850_000, "IDR", "out", 1, 19, 15},
-	{"Gojek Ride", "Payment", -4_200_000, "IDR", "out", 1, 18, 2},
-	{"Cash back redeemed", "To available balance", 6_400_000, "IDR", "cashback", 1, 9, 10},
-	{"Salary · PT Acme", "Received", 950_000_000, "IDR", "in", 3, 9, 0},
-	{"PLN Electricity", "Bill", -35_000_000, "IDR", "out", 3, 8, 15},
-	{"Netflix", "Subscription", -18_600_000, "IDR", "out", 4, 23, 0},
-	{"Tokopedia", "Payment", -12_900_000, "IDR", "out", 4, 14, 40},
-	{"Budi Santoso", "Received", 7_500_000, "IDR", "in", 4, 12, 5},
-	{"Shell Fuel", "Payment", -20_000_000, "IDR", "out", 5, 18, 20},
-	{"Kopi Kenangan", "Payment", -3_500_000, "IDR", "out", 5, 8, 35},
+type demoUser struct {
+	email, name string
+	// mainBalanceMinor is where the main account ends up. An "Opening
+	// balance" row makes up the difference from the transactions below.
+	// Cash back accounts end at the sum of their own rows.
+	mainBalanceMinor int64
+	transactions     []demoTransaction
+}
+
+var demoUsers = []demoUser{
+	{
+		email: "andi@example.com", name: "Andi Pratama", mainBalanceMinor: 1_245_000_000,
+		transactions: []demoTransaction{
+			{"main", "Kopi Kenangan", "Payment", -3_500_000, "out", 0, 8, 42},
+			{"main", "Sarah Wijaya", "Received", 50_000_000, "in", 0, 7, 30},
+			{"main", "Indomaret", "Payment", -24_850_000, "out", 1, 19, 15},
+			{"main", "Gojek Ride", "Payment", -4_200_000, "out", 1, 18, 2},
+			{"main", "Cash back redeemed", "To available balance", 6_400_000, "cashback", 1, 9, 10},
+			{"main", "Salary · PT Acme", "Received", 950_000_000, "in", 3, 9, 0},
+			// The redeem above moved all of Andi's cash back to main, so his
+			// cash back account ends at 0.
+			{"cashback", "Cash back earned", "From payments", 6_400_000, "cashback", 3, 12, 0},
+			{"cashback", "Cash back redeemed", "To available balance", -6_400_000, "out", 1, 9, 10},
+		},
+	},
+	{
+		email: "sarah@example.com", name: "Sarah Wijaya", mainBalanceMinor: 320_000_000,
+		transactions: []demoTransaction{
+			{"main", "PLN Electricity", "Bill", -35_000_000, "out", 3, 8, 15},
+			{"main", "Netflix", "Subscription", -18_600_000, "out", 4, 23, 0},
+			{"main", "Tokopedia", "Payment", -12_900_000, "out", 4, 14, 40},
+		},
+	},
+	{
+		email: "budi@example.com", name: "Budi Santoso", mainBalanceMinor: 175_000_000,
+		transactions: []demoTransaction{
+			{"main", "Andi Pratama", "Received", 7_500_000, "in", 4, 12, 5},
+			{"main", "Shell Fuel", "Payment", -20_000_000, "out", 5, 18, 20},
+			{"main", "Kopi Kenangan", "Payment", -3_500_000, "out", 5, 8, 35},
+		},
+	},
 }
 
 func main() {
@@ -53,38 +87,89 @@ func main() {
 	}
 	defer pool.Close()
 
-	var count int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM transactions").Scan(&count); err != nil {
-		log.Fatal(err)
-	}
-	if count > 0 {
-		log.Printf("transactions already has %d rows; nothing to seed", count)
-		return
-	}
-
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
 
+	var existing int
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM transactions").Scan(&existing); err != nil {
+		log.Fatal(err)
+	}
+
 	q := db.New(tx)
-	today := time.Now().In(wib)
-	for _, d := range demoTransactions {
-		day := today.AddDate(0, 0, -d.daysAgo)
-		if _, err := q.InsertTransaction(ctx, db.InsertTransactionParams{
-			Name:        d.name,
-			Description: d.description,
-			Kind:        d.kind,
-			AmountMinor: d.amountMinor,
-			Currency:    d.currency,
-			CreatedAt:   time.Date(day.Year(), day.Month(), day.Day(), d.hour, d.minute, 0, 0, wib),
-		}); err != nil {
-			log.Fatalf("insert %s: %v", d.name, err)
+	inserted := 0
+	for _, u := range demoUsers {
+		n, err := seedUser(ctx, q, u, existing == 0)
+		if err != nil {
+			log.Fatalf("seed %s: %v", u.email, err)
 		}
+		inserted += n
 	}
 	if err := tx.Commit(ctx); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("seeded %d transactions", len(demoTransactions))
+
+	if existing > 0 {
+		log.Printf("upserted %d users; transactions already has %d rows, so none were added", len(demoUsers), existing)
+		return
+	}
+	log.Printf("seeded %d users and %d transactions", len(demoUsers), inserted)
+}
+
+// seedUser upserts the user and their accounts, and when withTransactions is
+// set, inserts their history and syncs each stored balance to it.
+func seedUser(ctx context.Context, q *db.Queries, u demoUser, withTransactions bool) (int, error) {
+	userID, err := q.UpsertUser(ctx, db.UpsertUserParams{Email: u.email, Name: u.name})
+	if err != nil {
+		return 0, err
+	}
+	accounts := map[string]string{}
+	for _, kind := range []string{"main", "cashback"} {
+		id, err := q.UpsertAccount(ctx, db.UpsertAccountParams{UserID: userID, Kind: kind, Currency: currency})
+		if err != nil {
+			return 0, err
+		}
+		accounts[kind] = id
+	}
+	if !withTransactions {
+		return 0, nil
+	}
+
+	var mainSum int64
+	for _, t := range u.transactions {
+		if t.account == "main" {
+			mainSum += t.amountMinor
+		}
+	}
+	opening := u.mainBalanceMinor - mainSum
+	if opening <= 0 {
+		return 0, fmt.Errorf("main balance %d is below its transactions' total %d", u.mainBalanceMinor, mainSum)
+	}
+	rows := append([]demoTransaction{{"main", "Opening balance", "Top up", opening, "in", 30, 9, 0}}, u.transactions...)
+
+	today := time.Now().In(wib)
+	for _, t := range rows {
+		day := today.AddDate(0, 0, -t.daysAgo)
+		if _, err := q.InsertTransaction(ctx, db.InsertTransactionParams{
+			AccountID:   accounts[t.account],
+			Name:        t.name,
+			Description: t.description,
+			Kind:        t.kind,
+			AmountMinor: t.amountMinor,
+			Currency:    currency,
+			CreatedAt:   time.Date(day.Year(), day.Month(), day.Day(), t.hour, t.minute, 0, 0, wib),
+		}); err != nil {
+			return 0, fmt.Errorf("insert %s: %w", t.name, err)
+		}
+	}
+
+	// Store each balance as the sum of its account's transactions.
+	for _, id := range accounts {
+		if err := q.SyncAccountBalance(ctx, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(rows), nil
 }

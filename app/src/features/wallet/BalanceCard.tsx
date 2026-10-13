@@ -1,37 +1,58 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { Amount, Button, Icon, Text } from '@/components';
-import { formatMoney, idr } from '@/lib/format';
+import { Amount, Button, Icon, Spinner, Text } from '@/components';
+import type { Money } from '@/lib/api';
+import { formatMoney } from '@/lib/format';
 import { colors, radii, spacing } from '@/theme';
 
 type BalanceCardProps = {
-  balance: number;
-  currency: string;
-  cashback: number;
+  /** null while loading. */
+  balance: Money | null;
+  cashback: Money | null;
+  /** Shown in place of the balance when it couldn't be loaded. */
+  error?: string | null;
+  onRetry?: () => void;
   onRedeem: () => void;
   onPay: () => void;
 };
 
 /** Dark hero card on Home: available balance, cash back row and Pay. */
-export function BalanceCard({ balance, currency, cashback, onRedeem, onPay }: BalanceCardProps) {
+export function BalanceCard({ balance, cashback, error, onRetry, onRedeem, onPay }: BalanceCardProps) {
   return (
     <View style={styles.card}>
       <View style={styles.top}>
         <Text variant="bodySmall" color="onBrandMuted">
           Available balance
         </Text>
-        <View style={styles.badge}>
-          <Text variant="microStrong" color="onBrand" style={styles.badgeText}>
-            {currency}
-          </Text>
-        </View>
+        {balance ? (
+          <View style={styles.badge}>
+            <Text variant="microStrong" color="onBrand" style={styles.badgeText}>
+              {balance.currency}
+            </Text>
+          </View>
+        ) : null}
       </View>
 
-      <Amount money={idr(balance)} size="sm" color={colors.onBrand} currencyColor={colors.onBrandMuted} />
+      {balance ? (
+        <Amount money={balance} size="sm" color={colors.onBrand} currencyColor={colors.onBrandMuted} />
+      ) : error ? (
+        <Pressable accessibilityRole="button" onPress={onRetry} style={styles.status}>
+          <Text variant="bodySmall" color="onBrand">
+            {`Couldn’t load your balance. ${error}`}
+          </Text>
+          <Text variant="label" color="reward">
+            Try again
+          </Text>
+        </Pressable>
+      ) : (
+        <View style={styles.status} accessibilityLabel="Loading balance">
+          <Spinner color={colors.onBrandMuted} />
+        </View>
+      )}
 
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Cash back ${formatMoney(idr(cashback))}. Redeem`}
+        accessibilityLabel={cashback ? `Cash back ${formatMoney(cashback)}. Redeem` : 'Cash back. Redeem'}
         onPress={onRedeem}
         style={({ pressed }) => [styles.cashback, pressed && styles.cashbackPressed]}
       >
@@ -43,7 +64,7 @@ export function BalanceCard({ balance, currency, cashback, onRedeem, onPay }: Ba
             Cash back
           </Text>
           <Text variant="numeric" color="onBrand">
-            {formatMoney(idr(cashback))}
+            {cashback ? formatMoney(cashback) : '–'}
           </Text>
         </View>
         <View style={styles.redeem}>
@@ -74,6 +95,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.onBrandOverlayStrong,
   },
   badgeText: { letterSpacing: 0.5 },
+  status: { minHeight: 44, justifyContent: 'center', gap: spacing.xs },
   cashback: {
     marginTop: -spacing.xs,
     flexDirection: 'row',

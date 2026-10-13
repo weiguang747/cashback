@@ -16,7 +16,7 @@ import (
 // {"error": "..."} shape the app relies on.
 func TestErrorsAreJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter(fakeStore{})
+	router := setupRouter(demoStore(1))
 
 	tests := []struct {
 		name, method, path, body string
@@ -33,6 +33,7 @@ func TestErrorsAreJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-User-ID", andiID)
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 

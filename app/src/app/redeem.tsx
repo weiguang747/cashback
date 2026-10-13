@@ -2,14 +2,15 @@ import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { Amount, Button, Icon, ListRow, ResultHero, Screen, ScreenHeader, Text } from '@/components';
+import { Amount, Button, Icon, ListRow, ResultHero, Screen, ScreenHeader, Spinner, Text } from '@/components';
 import { demo } from '@/config/demo';
-import { account } from '@/data/mock';
-import { formatMoney, idr } from '@/lib/format';
+import { useAccounts } from '@/lib/accounts';
+import { addMoney, formatMoney, isZeroMoney } from '@/lib/format';
 import { colors, radii, spacing } from '@/theme';
 
 /** Move the full cash back balance into the available balance. */
 export default function RedeemScreen() {
+  const { main, cashback, error, loading, reload } = useAccounts();
   const [step, setStep] = useState<'form' | 'processing' | 'done'>('form');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
@@ -21,6 +22,28 @@ export default function RedeemScreen() {
     timer.current = setTimeout(() => setStep('done'), demo.processingMs - 200);
   };
 
+  if (!main || !cashback) {
+    return (
+      <Screen>
+        <ScreenHeader title="Redeem cash back" backLabel="Back to home" />
+        <View style={styles.status}>
+          {error ? (
+            <>
+              <Text variant="bodySmall" color="textMuted" align="center">
+                {error}
+              </Text>
+              <Button label="Try again" variant="secondary" size="sm" block={false} onPress={reload} loading={loading} />
+            </>
+          ) : (
+            <Spinner color={colors.textMuted} />
+          )}
+        </View>
+      </Screen>
+    );
+  }
+
+  const nothingToRedeem = isZeroMoney(cashback.balance);
+
   if (step === 'done') {
     return (
       <Screen>
@@ -28,8 +51,8 @@ export default function RedeemScreen() {
           status="success"
           ringColor={colors.reward}
           title="Cash back redeemed"
-          figure={<Amount money={idr(account.cashback)} size="md" currencyColor={colors.textMuted} />}
-          message={`Added to your available balance. Your new balance is ${formatMoney(idr(account.balance + account.cashback))}.`}
+          figure={<Amount money={cashback.balance} size="md" currencyColor={colors.textMuted} />}
+          message={`Added to your available balance. Your new balance is ${formatMoney(addMoney(main.balance, cashback.balance))}.`}
         />
         <Button label="Done" onPress={() => router.dismissTo('/home')} />
       </Screen>
@@ -47,7 +70,7 @@ export default function RedeemScreen() {
         <Text variant="captionStrong" color="onRewardMuted" style={styles.heroLabel}>
           Cash back balance
         </Text>
-        <Amount money={idr(account.cashback)} size="md" color={colors.onReward} />
+        <Amount money={cashback.balance} size="md" color={colors.onReward} />
         <Text variant="caption" color="onRewardMuted">
           Earned from {Math.round(demo.cashbackRate * 100)}% cash back on your payments
         </Text>
@@ -66,19 +89,28 @@ export default function RedeemScreen() {
               </View>
             }
             title="Available balance"
-            subtitle={formatMoney(idr(account.balance))}
+            subtitle={formatMoney(main.balance)}
           />
         </View>
         <Text variant="caption" color="textMuted">
-          Your full cash back balance will be added to your available balance instantly.
+          {nothingToRedeem
+            ? 'You have no cash back to redeem yet. Earn some on your next payment.'
+            : 'Your full cash back balance will be added to your available balance instantly.'}
         </Text>
       </View>
 
       <View style={styles.flex} />
 
       <Button
-        label={step === 'processing' ? 'Redeeming…' : `Redeem ${formatMoney(idr(account.cashback))}`}
+        label={
+          step === 'processing'
+            ? 'Redeeming…'
+            : nothingToRedeem
+              ? 'Nothing to redeem yet'
+              : `Redeem ${formatMoney(cashback.balance)}`
+        }
         loading={step === 'processing'}
+        disabled={nothingToRedeem}
         onPress={redeem}
       />
     </Screen>
@@ -87,6 +119,7 @@ export default function RedeemScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  status: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md },
   hero: {
     marginTop: spacing.xxxl,
     paddingVertical: spacing.xxl + 4,

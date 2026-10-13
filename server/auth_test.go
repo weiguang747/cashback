@@ -12,7 +12,7 @@ import (
 
 func TestSignIn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter(fakeStore{})
+	router := setupRouter(demoStore(0))
 
 	tests := []struct {
 		name      string
@@ -20,8 +20,9 @@ func TestSignIn(t *testing.T) {
 		wantCode  int
 		wantEmail string
 	}{
-		{"valid email", `{"email":"you@example.com"}`, http.StatusOK, "you@example.com"},
-		{"normalizes case and spaces", `{"email":"  You@Example.COM "}`, http.StatusOK, "you@example.com"},
+		{"known email", `{"email":"andi@example.com"}`, http.StatusOK, "andi@example.com"},
+		{"normalizes case and spaces", `{"email":"  Andi@Example.COM "}`, http.StatusOK, "andi@example.com"},
+		{"unknown email", `{"email":"you@example.com"}`, http.StatusUnauthorized, ""},
 		{"empty email", `{"email":""}`, http.StatusBadRequest, ""},
 		{"missing email", `{}`, http.StatusBadRequest, ""},
 		{"no at sign", `{"email":"not-an-email"}`, http.StatusBadRequest, ""},
@@ -48,8 +49,8 @@ func TestSignIn(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 				t.Fatalf("invalid JSON response: %v", err)
 			}
-			if resp.User.Email != tt.wantEmail {
-				t.Errorf("email = %q, want %q", resp.User.Email, tt.wantEmail)
+			if want := (user{ID: andiID, Email: tt.wantEmail, Name: "Andi Pratama"}); resp.User != want {
+				t.Errorf("user = %+v, want %+v", resp.User, want)
 			}
 		})
 	}

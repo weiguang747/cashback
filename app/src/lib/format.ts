@@ -114,6 +114,49 @@ export function splitMoney(money: Money): { symbol: string; figure: string; symb
   };
 }
 
+// Exact arithmetic on decimal strings, via BigInt in a shared scale.
+
+function fractionDigits(m: Money): number {
+  return m.value.split('.')[1]?.length ?? 0;
+}
+
+function toScaled(m: Money, digits: number): bigint {
+  const negative = m.value.startsWith('-');
+  const [int = '0', frac = ''] = m.value.replace(/^[-+]/, '').split('.');
+  const v = BigInt(int + frac.padEnd(digits, '0'));
+  return negative ? -v : v;
+}
+
+function fromScaled(v: bigint, digits: number, currency: string): Money {
+  const negative = v < BigInt(0);
+  const s = (negative ? -v : v).toString().padStart(digits + 1, '0');
+  const value = digits ? `${s.slice(0, -digits)}.${s.slice(-digits)}` : s;
+  return { value: negative ? `-${value}` : value, currency };
+}
+
+function sameCurrency(a: Money, b: Money) {
+  if (a.currency !== b.currency) throw new Error(`Cannot combine ${a.currency} and ${b.currency}`);
+}
+
+/** a + b, exactly. Both must be in the same currency. */
+export function addMoney(a: Money, b: Money): Money {
+  sameCurrency(a, b);
+  const digits = Math.max(fractionDigits(a), fractionDigits(b));
+  return fromScaled(toScaled(a, digits) + toScaled(b, digits), digits, a.currency);
+}
+
+/** -1, 0 or 1 as a is less than, equal to or greater than b. Same currency only. */
+export function compareMoney(a: Money, b: Money): -1 | 0 | 1 {
+  sameCurrency(a, b);
+  const digits = Math.max(fractionDigits(a), fractionDigits(b));
+  const d = toScaled(a, digits) - toScaled(b, digits);
+  return d < BigInt(0) ? -1 : d > BigInt(0) ? 1 : 0;
+}
+
+export function isZeroMoney(m: Money): boolean {
+  return !/[1-9]/.test(m.value);
+}
+
 /** Wraps a whole-rupiah amount from the mock data as Money. */
 export function idr(amount: number | string): Money {
   return { value: String(amount || '0'), currency: 'IDR' };

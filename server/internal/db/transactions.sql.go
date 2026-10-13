@@ -11,12 +11,13 @@ import (
 )
 
 const insertTransaction = `-- name: InsertTransaction :one
-INSERT INTO transactions (name, description, kind, amount_minor, currency, created_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id
 `
 
 type InsertTransactionParams struct {
+	AccountID   string
 	Name        string
 	Description string
 	Kind        string
@@ -27,6 +28,7 @@ type InsertTransactionParams struct {
 
 func (q *Queries) InsertTransaction(ctx context.Context, arg InsertTransactionParams) (string, error) {
 	row := q.db.QueryRow(ctx, insertTransaction,
+		arg.AccountID,
 		arg.Name,
 		arg.Description,
 		arg.Kind,
@@ -42,10 +44,17 @@ func (q *Queries) InsertTransaction(ctx context.Context, arg InsertTransactionPa
 const listTransactions = `-- name: ListTransactions :many
 SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at
 FROM transactions t
+JOIN accounts a ON a.id = t.account_id
 JOIN currencies c ON c.code = t.currency
+WHERE a.user_id = $1 AND a.kind = 'main'
 ORDER BY t.created_at DESC, t.id DESC
-LIMIT $1
+LIMIT $2
 `
+
+type ListTransactionsParams struct {
+	UserID string
+	Limit  *int32
+}
 
 type ListTransactionsRow struct {
 	ID          string
@@ -58,9 +67,9 @@ type ListTransactionsRow struct {
 	CreatedAt   time.Time
 }
 
-// Newest first. A NULL limit returns every row.
-func (q *Queries) ListTransactions(ctx context.Context, limit *int32) ([]ListTransactionsRow, error) {
-	rows, err := q.db.Query(ctx, listTransactions, limit)
+// A user's main-account activity, newest first. A NULL limit returns every row.
+func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, listTransactions, arg.UserID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

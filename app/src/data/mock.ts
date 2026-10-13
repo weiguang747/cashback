@@ -2,14 +2,6 @@ import type { Tone } from '@/theme';
 
 /** Simulated data for the demo. Amounts are whole rupiah. */
 
-export const account = {
-  name: 'Andi Pratama',
-  initials: 'AP',
-  currency: 'IDR',
-  balance: 12_450_000,
-  cashback: 86_400,
-};
-
 export type Merchant = { id: string; name: string; category: string; tone: Tone };
 
 export const merchants: Merchant[] = [

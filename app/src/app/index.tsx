@@ -1,9 +1,9 @@
-import { router } from 'expo-router';
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { Button, Icon, Screen, Text, TextField } from '@/components';
 import * as api from '@/lib/api';
+import { setUser } from '@/lib/session';
 import { colors, radii, spacing } from '@/theme';
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -20,8 +20,9 @@ export default function SignInScreen() {
     setLoading(true);
     setError(null);
     try {
-      await api.signIn(email.trim());
-      router.replace('/home');
+      const { user } = await api.signIn(email.trim());
+      // The root layout's protected routes take over and open Home.
+      setUser(user);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
     } finally {

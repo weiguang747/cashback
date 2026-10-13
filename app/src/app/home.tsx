@@ -3,9 +3,10 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button, EmptyState, Screen, SectionHeader, Spinner, Text, Tile, TransactionRow } from '@/components';
 import { demo } from '@/config/demo';
-import { account } from '@/data/mock';
 import { CashbackBanner } from '@/features/cashback/CashbackBanner';
 import { BalanceCard } from '@/features/wallet/BalanceCard';
+import { useAccounts } from '@/lib/accounts';
+import { clearUser, useUser } from '@/lib/session';
 import { dayLabel, timeLabel, useTransactions } from '@/lib/transactions';
 import { colors, radii, spacing } from '@/theme';
 
@@ -13,7 +14,16 @@ import { colors, radii, spacing } from '@/theme';
 const RECENT_COUNT = 6;
 
 export default function HomeScreen() {
+  const user = useUser();
+  const accounts = useAccounts();
   const { data: transactions, error, loading, reload } = useTransactions(RECENT_COUNT);
+  const name = user?.name ?? '';
+  const initials = name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
   const goPay = () => router.push('/merchants');
   const goRedeem = () => router.push('/redeem');
 
@@ -22,16 +32,16 @@ export default function HomeScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <View style={styles.user}>
-            <Tile tone="positive" size={44} radius={22} label={account.initials}>
+            <Tile tone="positive" size={44} radius={22} label={name}>
               <Text variant="headline" color="positive">
-                {account.initials}
+                {initials}
               </Text>
             </Tile>
             <View style={styles.greeting}>
               <Text variant="caption" color="textMuted">
                 Good morning
               </Text>
-              <Text variant="headline">{account.name}</Text>
+              <Text variant="headline">{name}</Text>
             </View>
           </View>
           <Button
@@ -40,15 +50,16 @@ export default function HomeScreen() {
             variant="secondary"
             size="sm"
             block={false}
-            onPress={() => router.replace('/')}
+            onPress={clearUser}
             style={styles.logout}
           />
         </View>
 
         <BalanceCard
-          balance={account.balance}
-          currency={account.currency}
-          cashback={account.cashback}
+          balance={accounts.main?.balance ?? null}
+          cashback={accounts.cashback?.balance ?? null}
+          error={accounts.error}
+          onRetry={accounts.reload}
           onRedeem={goRedeem}
           onPay={goPay}
         />

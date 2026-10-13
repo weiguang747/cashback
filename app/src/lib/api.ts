@@ -1,13 +1,15 @@
+import { getUser } from './session';
+
 /**
  * Client for the cashback server. Set EXPO_PUBLIC_API_URL in `.env` to point
  * somewhere other than localhost (see `.env.example`).
  */
 export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8080';
 
-export type User = { email: string };
+export type User = { id: string; email: string; name: string };
 export type SignInResponse = { user: User };
 
-/** Signs in with an email. The server accepts any valid email for now. */
+/** Signs in with the email of an existing user. Demo only: there is no password. */
 export function signIn(email: string): Promise<SignInResponse> {
   return post<SignInResponse>('/v1/auth/sign-in', { email });
 }
@@ -43,6 +45,18 @@ export async function getTransactions(opts: { limit?: number; signal?: AbortSign
   return data.transactions;
 }
 
+export type Account = {
+  id: string;
+  kind: 'main' | 'cashback';
+  balance: Money;
+};
+
+/** The signed-in user's accounts, main first. */
+export async function getAccounts(opts: { signal?: AbortSignal } = {}): Promise<Account[]> {
+  const data = await request<{ accounts: Account[] }>('/v1/accounts', { signal: opts.signal });
+  return data.accounts;
+}
+
 function post<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',
@@ -51,10 +65,15 @@ function post<T>(path: string, body: unknown): Promise<T> {
   });
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // Demo stand-in for auth: the server trusts this header (see requireUser).
+  const user = getUser();
+  const headers = new Headers(init.headers);
+  if (user) headers.set('X-User-ID', user.id);
+
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, init);
+    res = await fetch(`${API_URL}${path}`, { ...init, headers });
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') throw e;
     throw new Error("Can't reach the server. Check your connection and try again.");

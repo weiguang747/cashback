@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+type Account struct {
+	ID           string
+	UserID       string
+	Kind         string
+	Currency     string
+	BalanceMinor int64
+	CreatedAt    time.Time
+}
+
 type Currency struct {
 	Code      string
 	MinorUnit int16
@@ -21,4 +30,12 @@ type Transaction struct {
 	AmountMinor int64
 	Currency    string
 	CreatedAt   time.Time
+	AccountID   string
+}
+
+type User struct {
+	ID        string
+	Email     string
+	Name      string
+	CreatedAt time.Time
 }

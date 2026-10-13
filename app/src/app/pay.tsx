@@ -4,14 +4,16 @@ import { StyleSheet, View } from 'react-native';
 
 import { Amount, Button, Keypad, Pill, Screen, ScreenHeader, Text, Tile, applyKey } from '@/components';
 import { demo } from '@/config/demo';
-import { account, findMerchant } from '@/data/mock';
-import { formatMoney, idr } from '@/lib/format';
+import { findMerchant } from '@/data/mock';
+import { useAccounts } from '@/lib/accounts';
+import { compareMoney, formatMoney, idr } from '@/lib/format';
 import { colors, radii, spacing, type AmountSize } from '@/theme';
 
 /** Enter an amount and simulate paying the chosen merchant. */
 export default function PayScreen() {
   const params = useLocalSearchParams<{ merchantId?: string; amount?: string }>();
   const merchant = findMerchant(params.merchantId);
+  const { main, error } = useAccounts();
 
   const [amount, setAmount] = useState(params.amount ?? '');
   const [processing, setProcessing] = useState(false);
@@ -22,8 +24,10 @@ export default function PayScreen() {
 
   const value = Number(amount || '0');
   const empty = value === 0;
-  const overBalance = value > account.balance;
-  const blocked = empty || overBalance;
+  // Only a hint for the user: the server must enforce this once payments
+  // are real.
+  const overBalance = main ? compareMoney(idr(amount), main.balance) > 0 : false;
+  const blocked = empty || overBalance || !main;
 
   const size: AmountSize = amount.length > 9 ? 'sm' : amount.length > 6 ? 'lg' : 'xl';
   const figureColor = empty ? colors.textPlaceholder : overBalance ? colors.danger : colors.text;
@@ -65,12 +69,14 @@ export default function PayScreen() {
         <View accessibilityLiveRegion="polite">
           <Amount money={idr(amount)} size={size} color={figureColor} />
         </View>
-        {overBalance ? (
+        {!main ? (
+          <Pill tone={error ? 'danger' : undefined}>{error ? `Couldn’t load your balance. ${error}` : 'Loading balance…'}</Pill>
+        ) : overBalance ? (
           <Pill tone="danger" icon="alert">
-            {`Amount exceeds your balance of ${formatMoney(idr(account.balance))}`}
+            {`Amount exceeds your balance of ${formatMoney(main.balance)}`}
           </Pill>
         ) : (
-          <Pill>{`Balance ${formatMoney(idr(account.balance))}`}</Pill>
+          <Pill>{`Balance ${formatMoney(main.balance)}`}</Pill>
         )}
       </View>
 
