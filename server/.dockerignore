@@ -1,0 +1,9 @@
+# Keep the build context small and avoid leaking local files into the image.
+.git
+.env
+.env.*
+*.md
+Dockerfile
+.dockerignore
+server
+bin/
