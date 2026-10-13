@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,11 +72,16 @@ func (f fakeStore) ListTransactions(_ context.Context, arg db.ListTransactionsPa
 	if f.err != nil {
 		return nil, f.err
 	}
-	rows := f.txns[arg.UserID]
-	if arg.Limit != nil && int(*arg.Limit) < len(rows) {
-		return rows[:*arg.Limit], nil
+	var out []db.ListTransactionsRow
+	for _, r := range f.txns[arg.UserID] {
+		if !beforeCursor(r.CreatedAt, r.ID, arg.BeforeCreatedAt, arg.BeforeID) ||
+			(arg.Kind != nil && r.Kind != *arg.Kind) ||
+			(arg.NamePattern != nil && !likeMatch(r.Name, *arg.NamePattern)) {
+			continue
+		}
+		out = append(out, r)
 	}
-	return rows, nil
+	return limitRows(out, arg.Limit), nil
 }
 
 func (f fakeStore) GetMainAccount(_ context.Context, arg db.GetMainAccountParams) (db.GetMainAccountRow, error) {
@@ -115,11 +122,35 @@ func (f fakeStore) ListCashbackTransactions(_ context.Context, arg db.ListCashba
 	if f.err != nil {
 		return nil, f.err
 	}
-	rows := f.cashbackTxns[arg.UserID]
-	if arg.Limit != nil && int(*arg.Limit) < len(rows) {
-		return rows[:*arg.Limit], nil
+	var out []db.ListCashbackTransactionsRow
+	for _, r := range f.cashbackTxns[arg.UserID] {
+		if beforeCursor(r.CreatedAt, r.ID, arg.BeforeCreatedAt, arg.BeforeID) {
+			out = append(out, r)
+		}
 	}
-	return rows, nil
+	return limitRows(out, arg.Limit), nil
+}
+
+// beforeCursor is the queries' (created_at, id) < (cursor) row comparison;
+// rows are already newest first. A nil cursor is the first page.
+func beforeCursor(at time.Time, id string, cursorAt *time.Time, cursorID *string) bool {
+	if cursorAt == nil {
+		return true
+	}
+	return at.Before(*cursorAt) || (at.Equal(*cursorAt) && id < *cursorID)
+}
+
+// likeMatch is ILIKE for the "%text%" patterns listTransactions builds.
+func likeMatch(name, pattern string) bool {
+	text := strings.NewReplacer(`\%`, "%", `\_`, "_", `\\`, `\`).Replace(strings.TrimSuffix(strings.TrimPrefix(pattern, "%"), "%"))
+	return strings.Contains(strings.ToLower(name), strings.ToLower(text))
+}
+
+func limitRows[T any](rows []T, limit int32) []T {
+	if int(limit) < len(rows) {
+		return rows[:limit]
+	}
+	return rows
 }
 
 // Pay mimics database.Pay: refuses to overdraw, debits in place, and
@@ -257,7 +288,7 @@ func demoStore(n int) fakeStore {
 	andi := make([]db.ListTransactionsRow, n)
 	for i := range andi {
 		andi[i] = db.ListTransactionsRow{
-			ID: "t" + string(rune('a'+i)), Name: "Kopi Kenangan", Description: "Payment", Kind: "out",
+			ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i), Name: "Kopi Kenangan", Description: "Payment", Kind: "out",
 			AmountMinor: -3_500_000, Currency: "IDR", MinorUnit: 2,
 			CreatedAt: time.Date(2026, 10, 13, 8, 42-i, 0, 0, wib),
 		}
@@ -276,7 +307,7 @@ func demoStore(n int) fakeStore {
 		},
 		txns: map[string][]db.ListTransactionsRow{
 			andiID: andi,
-			sarahID: {{ID: "s1", Name: "Netflix", Description: "Subscription", Kind: "out",
+			sarahID: {{ID: "00000000-0000-4000-8000-100000000001", Name: "Netflix", Description: "Subscription", Kind: "out",
 				AmountMinor: -18_600_000, Currency: "IDR", MinorUnit: 2, CreatedAt: time.Date(2026, 10, 9, 23, 0, 0, 0, wib)}},
 		},
 	}

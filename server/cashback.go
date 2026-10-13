@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -81,26 +80,22 @@ func getCampaign(s store) gin.HandlerFunc {
 type cashbackHistoryResponse struct {
 	Balance      money.Money   `json:"balance"`
 	Transactions []transaction `json:"transactions"`
+	// Pass as ?cursor= for the next page; null on the last page.
+	NextCursor *string `json:"nextCursor"`
 }
 
 // listCashbackHistory returns the signed-in user's cash back balance and
-// the activity on their cash back account, newest first.
-// Optional query param: limit (positive integer).
+// one page of the activity on their cash back account, newest first.
+// Optional query params: limit and cursor (see paging.go).
 func listCashbackHistory(s store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 		user := currentUser(c)
 		cur := currencyParam(c)
 
-		var limit *int32
-		if q := c.Query("limit"); q != "" {
-			n, err := strconv.ParseInt(q, 10, 32)
-			if err != nil || n < 1 {
-				httpx.Error(c, http.StatusBadRequest, "limit must be a positive integer")
-				return
-			}
-			n32 := int32(n)
-			limit = &n32
+		p, ok := pageParams(c)
+		if !ok {
+			return
 		}
 
 		account, err := s.GetUserAccount(ctx, db.GetUserAccountParams{UserID: user.ID, Kind: "cashback", Currency: cur})
@@ -112,11 +107,15 @@ func listCashbackHistory(s store) gin.HandlerFunc {
 			httpx.InternalError(c, "get cash back account failed", err)
 			return
 		}
-		rows, err := s.ListCashbackTransactions(ctx, db.ListCashbackTransactionsParams{UserID: user.ID, Currency: cur, Limit: limit})
+		rows, err := s.ListCashbackTransactions(ctx, db.ListCashbackTransactionsParams{
+			UserID: user.ID, Currency: cur, Limit: p.limit, BeforeCreatedAt: p.beforeCreatedAt, BeforeID: p.beforeID,
+		})
 		if err != nil {
 			httpx.InternalError(c, "list cash back transactions failed", err)
 			return
 		}
+
+		rows, next := trim(p, rows, func(r db.ListCashbackTransactionsRow) (time.Time, string) { return r.CreatedAt, r.ID })
 
 		txns := make([]transaction, 0, len(rows))
 		for _, r := range rows {
@@ -125,6 +124,7 @@ func listCashbackHistory(s store) gin.HandlerFunc {
 		c.JSON(http.StatusOK, cashbackHistoryResponse{
 			Balance:      money.Money{Minor: account.BalanceMinor, Currency: cur, Exponent: int(account.MinorUnit)},
 			Transactions: txns,
+			NextCursor:   next,
 		})
 	}
 }

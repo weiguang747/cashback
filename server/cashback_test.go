@@ -102,7 +102,7 @@ func TestCashbackHistory(t *testing.T) {
 	router := testRouter(s)
 
 	want := `{"balance":{"value":"1750.00","currency":"IDR"},"transactions":[{"id":"cb1","name":"Cash back",` +
-		`"description":"From Kopi Senja","amount":{"value":"1750.00","currency":"IDR"},"kind":"cashback","createdAt":"2026-10-13T02:42:00Z"}]}`
+		`"description":"From Kopi Senja","amount":{"value":"1750.00","currency":"IDR"},"kind":"cashback","createdAt":"2026-10-13T02:42:00Z"}],"nextCursor":null}`
 	if body := get(router, "/v1/cashback/history", andiID).Body.String(); body != want {
 		t.Errorf("body = %s\nwant   %s", body, want)
 	}

@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -102,7 +103,7 @@ func TestListTransactionsScopesByUser(t *testing.T) {
 	insert(t, q, db.InsertTransactionParams{AccountID: a.cashback, Kind: "cashback", AmountMinor: 500, Currency: "USD"})
 	insert(t, q, db.InsertTransactionParams{AccountID: b.main, Kind: "in", AmountMinor: 100, Currency: "USD"})
 
-	rows, err := q.ListTransactions(ctx, db.ListTransactionsParams{UserID: a.id})
+	rows, err := q.ListTransactions(ctx, db.ListTransactionsParams{UserID: a.id, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +113,78 @@ func TestListTransactionsScopesByUser(t *testing.T) {
 	}
 	if r := rows[0]; r.AmountMinor != big || r.Currency != "USD" || r.MinorUnit != 2 || !r.CreatedAt.Equal(at) {
 		t.Errorf("round trip = %+v", r)
+	}
+}
+
+// Paging by (created_at, id) cursor visits every row once, newest first,
+// including rows that share a timestamp across a page break, and the
+// optional filters narrow it.
+func TestListTransactionsPaging(t *testing.T) {
+	pool := openTestDB(t)
+	ctx := context.Background()
+	q := db.New(begin(t, pool))
+	u := createUser(t, q, "paging@test.example", "IDR")
+
+	base := time.Now().Truncate(time.Microsecond)
+	for i := range 7 {
+		// Rows 2, 3 and 4 share one moment.
+		at := base.Add(-time.Duration(min(i, 2)+max(i-4, 0)) * time.Minute)
+		name := fmt.Sprintf("Shop %d", i)
+		if i == 6 {
+			name = "50% off_sale"
+		}
+		kind, amount := "out", int64(-100)
+		if i%3 == 0 {
+			kind, amount = "in", 100
+		}
+		insert(t, q, db.InsertTransactionParams{AccountID: u.main, Name: name, Description: "x", Kind: kind, AmountMinor: amount, Currency: "IDR", CreatedAt: at})
+	}
+	all, err := q.ListTransactions(ctx, db.ListTransactionsParams{UserID: u.id, Limit: 100})
+	if err != nil || len(all) != 7 {
+		t.Fatalf("all: %d rows, %v", len(all), err)
+	}
+
+	var paged []string
+	params := db.ListTransactionsParams{UserID: u.id, Limit: 3}
+	for {
+		rows, err := q.ListTransactions(ctx, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			paged = append(paged, r.ID)
+		}
+		if len(rows) < 3 {
+			break
+		}
+		last := rows[len(rows)-1]
+		params.BeforeCreatedAt, params.BeforeID = &last.CreatedAt, &last.ID
+	}
+	if len(paged) != len(all) {
+		t.Fatalf("paged %d rows, want %d", len(paged), len(all))
+	}
+	for i := range all {
+		if paged[i] != all[i].ID {
+			t.Errorf("row %d = %s, want %s", i, paged[i], all[i].ID)
+		}
+		if i > 0 && (all[i].CreatedAt.After(all[i-1].CreatedAt) ||
+			(all[i].CreatedAt.Equal(all[i-1].CreatedAt) && all[i].ID > all[i-1].ID)) {
+			t.Errorf("row %d is not older than row %d", i, i-1)
+		}
+	}
+
+	in := "in"
+	rows, err := q.ListTransactions(ctx, db.ListTransactionsParams{UserID: u.id, Limit: 100, Kind: &in})
+	if err != nil || len(rows) != 3 {
+		t.Errorf("kind=in: %d rows, want 3 (%v)", len(rows), err)
+	}
+	// Wildcards in the search text are escaped by the handler; here the
+	// escaped pattern must match only the literal text.
+	for pattern, want := range map[string]int{`%50\% OFF\_%`: 1, `%50\%\_%`: 0, `%shop%`: 6} {
+		rows, err := q.ListTransactions(ctx, db.ListTransactionsParams{UserID: u.id, Limit: 100, NamePattern: &pattern})
+		if err != nil || len(rows) != want {
+			t.Errorf("pattern %q: %d rows, want %d (%v)", pattern, len(rows), want, err)
+		}
 	}
 }
 

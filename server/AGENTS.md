@@ -110,7 +110,9 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 
 - **Errors** are always JSON `{"error": "message", "code": "machine_code"}`. `code` is optional; the app branches on it (e.g. `insufficient_funds`). Router-level 404/405/panics go through `httpx` too, so they follow the same shape.
 - **No internal details in error responses.** For unexpected errors call `httpx.InternalError(c, msg, err)`: it logs the error and returns `something went wrong`. If the client already disconnected (the app gives up after 15 s), the failure is just the cancellation, so it logs at info with `client_canceled` and records status 499 instead of an error and a 500.
-- **Lists are newest first.** An optional `limit` must be a positive int32; NULL means no limit.
+- **Lists are newest first and paged by cursor** (`paging.go`): `limit` 1–100 (default 20), `cursor` from the previous page's `nextCursor` (`null` on the last page). A cursor is the last row's `(created_at, id)`; queries compare it as a row value against the `(account_id, created_at DESC, id DESC)` index, with `COALESCE` to "infinity" for the first page so even a generic plan seeks the index. Handlers fetch `limit + 1` rows to know whether there is a next page. Never add an unbounded list.
+- **Search text** goes into `ILIKE` only through `likeEscaper`, so `%` and `_` match literally.
+- **Timeouts:** every `/v1` request gets a 10 s context deadline (`httpx.Timeout`, `requestTimeout` in `main.go`), shorter than the app's 15 s. Database and Redis calls take that context, so a query stuck behind a lock stops and frees its pool connection. `httpx.InternalError` turns a deadline into 503 `timeout` (logged at error with `timed_out`); money endpoints release the idempotency key as for any failure. `http.Server` also has read/write/idle timeouts, and SIGTERM drains in-flight requests for up to 15 s (compose's `stop_grace_period` is 20 s).
 - **Versioning:** `/v1` may change while the app is unreleased. After release, breaking changes go in `/v2`.
 
 ## Logging
@@ -131,7 +133,7 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 
 ## Database changes
 
-- Add a new numbered migration with `-- +goose Up` / `-- +goose Down`; **never edit a migration that has been applied anywhere**.
+- Add a new numbered migration with `-- +goose Up` / `-- +goose Down`; **never edit a migration that has been applied anywhere**. `00001_init.sql` is the whole schema as of the first release: the development migrations were squashed into it before anything reached production. A database created before the squash still records versions 1–5 and would silently skip new migrations numbered 2–5, so recreate it: `docker compose exec db dropdb -U cashback cashback`, `docker compose exec db createdb -U cashback cashback`, restart the server, then `go run ./cmd/seed` (same for `cashback_test`).
 - Put invariants in the schema (CHECK, FK, UNIQUE, EXCLUDE) as well as in code. Name constraints you match on in Go (e.g. `transactions_account_idempotency_key`, `campaigns_no_overlap`).
 - After changing migrations or queries, run `go tool sqlc generate` and commit `internal/db`. Type overrides (uuid → `string`, timestamptz → `time.Time`, nullable → pointers, date → `time.Time`) are in `sqlc.yaml`.
 - Demo data goes in `cmd/seed`, not migrations. Reference data that every environment needs (e.g. `currencies`) may be inserted by a migration.

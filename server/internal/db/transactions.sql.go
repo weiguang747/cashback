@@ -90,13 +90,21 @@ JOIN accounts a ON a.id = t.account_id
 JOIN currencies c ON c.code = t.currency
 LEFT JOIN cashback_awards ca ON ca.payment_transaction_id = t.id
 WHERE a.user_id = $1::uuid AND a.kind = 'main'
+  AND (t.created_at, t.id) < (COALESCE($2::timestamptz, 'infinity'),
+                              COALESCE($3::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+  AND ($4::text IS NULL OR t.kind = $4::text)
+  AND ($5::text IS NULL OR t.name ILIKE $5::text)
 ORDER BY t.created_at DESC, t.id DESC
-LIMIT $2
+LIMIT $6::int
 `
 
 type ListTransactionsParams struct {
-	UserID string
-	Limit  *int32
+	UserID          string
+	BeforeCreatedAt *time.Time
+	BeforeID        *string
+	Kind            *string
+	NamePattern     *string
+	Limit           int32
 }
 
 type ListTransactionsRow struct {
@@ -111,10 +119,21 @@ type ListTransactionsRow struct {
 	CashbackMinor *int64
 }
 
-// A user's main-account activity, newest first, with the cash back each
-// payment earned (NULL if none). A NULL limit returns every row.
+// One page of a user's main-account activity, newest first, with the cash
+// back each payment earned (NULL if none). The page starts after the cursor
+// (created_at, id) of the previous page's last row; NULL starts at the
+// newest. The cursor is always a row comparison, so even a generic plan
+// seeks transactions_account_created_at_idx instead of scanning from the top.
+// kind and name_pattern (ILIKE) are optional filters.
 func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error) {
-	rows, err := q.db.Query(ctx, listTransactions, arg.UserID, arg.Limit)
+	rows, err := q.db.Query(ctx, listTransactions,
+		arg.UserID,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.Kind,
+		arg.NamePattern,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

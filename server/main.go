@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -68,10 +70,52 @@ func main() {
 
 	// Listen on all interfaces (":8080"), not "localhost:8080" —
 	// inside a container, localhost is unreachable from your Mac.
-	if err := setupRouter(newPgStore(pool), idempotency.NewRedis(rdb)).Run(":" + port); err != nil {
-		fatal("server stopped", logx.Err(err))
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: setupRouter(newPgStore(pool), idempotency.NewRedis(rdb)),
+		// Slow or stalled clients can't hold a connection open forever.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// Longer than requestTimeout, so a handler that runs out of time can
+		// still send its 503 before the connection is cut.
+		WriteTimeout: requestTimeout + 5*time.Second,
+		IdleTimeout:  60 * time.Second,
+		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
+
+	// On SIGTERM (docker stop, a deploy) or Ctrl-C, stop accepting requests
+	// and let in-flight ones finish, so a payment isn't cut off mid-way.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ListenAndServe() }()
+
+	select {
+	case err := <-serveErr:
+		fatal("server stopped", logx.Err(err))
+	case sig := <-stop:
+		slog.Info("shutting down", "signal", sig.String())
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("shutdown did not finish; dropping remaining requests", logx.Err(err))
+		return
+	}
+	slog.Info("server stopped")
 }
+
+const (
+	// requestTimeout bounds each API request, including its database and
+	// Redis calls. It is shorter than the app's 15 s timeout, so the app
+	// gets a definite 503 "timeout" (and a released idempotency key) rather
+	// than giving up on its own.
+	requestTimeout = 10 * time.Second
+	// shutdownTimeout is how long in-flight requests get to finish on
+	// SIGTERM: longer than requestTimeout, shorter than compose's
+	// stop_grace_period.
+	shutdownTimeout = requestTimeout + 5*time.Second
+)
 
 func fatal(msg string, args ...any) {
 	slog.Error(msg, args...)
@@ -102,7 +146,7 @@ func setupRouter(s store, idem idempotency.Store) *gin.Engine {
 
 	// Everything the app calls lives under /v1, so a future breaking change
 	// can ship as /v2 without breaking app versions already installed.
-	v1 := router.Group("/v1")
+	v1 := router.Group("/v1", httpx.Timeout(requestTimeout))
 	v1.POST("/auth/sign-in", signIn(s))
 
 	signedIn := v1.Group("", requireUser(s))

@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"cashback/server/internal/db"
 	"cashback/server/internal/httpx"
 	"cashback/server/internal/logx"
 )
@@ -198,4 +200,91 @@ func TestClientCancelIsNotAServerError(t *testing.T) {
 			t.Errorf("got %d, want 500 logged at error:\n%s", w.Code, logs)
 		}
 	})
+}
+
+// A request that runs past its deadline (a query stuck behind a lock, a slow
+// Redis) is a server fault, but a temporary one: 503 "timeout" so the app
+// retries, logged at error, and the idempotency key released so the retry
+// isn't refused as in_progress.
+func TestTimedOutRequestIsRetryable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	expired := func(method, path, body string) *http.Request {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		t.Cleanup(cancel)
+		req := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", andiID)
+		req.Header.Set("Idempotency-Key", "key-00000001")
+		return req
+	}
+
+	tests := []struct {
+		name   string
+		setup  func(*fakeStore, *fakeIdem)
+		method string
+		path   string
+		msg    string
+	}{
+		{"payment times out", func(s *fakeStore, _ *fakeIdem) { s.payErr = context.DeadlineExceeded },
+			http.MethodPost, "/v1/payments", "request failed; idempotency key released for retry"},
+		{"idempotency lock times out", func(_ *fakeStore, i *fakeIdem) { i.err = context.DeadlineExceeded },
+			http.MethodPost, "/v1/payments", "idempotency lock abandoned"},
+		{"read times out", func(*fakeStore, *fakeIdem) {},
+			http.MethodGet, "/v1/transactions", "list transactions failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureLogs(t)
+			s, idem := demoStore(0), newFakeIdem()
+			tt.setup(&s, idem)
+			var st store = s
+			if tt.method == http.MethodGet {
+				st = failingTransactions{s, context.DeadlineExceeded}
+			}
+			w := httptest.NewRecorder()
+			setupRouter(st, idem).ServeHTTP(w, expired(tt.method, tt.path, kopi))
+
+			if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"code":"timeout"`) {
+				t.Errorf("got %d %s, want 503 timeout", w.Code, w.Body)
+			}
+			out := logs.String()
+			for _, want := range []string{`"msg":"` + tt.msg + `"`, `"timed_out":true`, `"level":"ERROR"`} {
+				if !strings.Contains(out, want) {
+					t.Errorf("logs missing %s:\n%s", want, out)
+				}
+			}
+			if strings.Contains(out, "unavailable; refusing") {
+				t.Errorf("timeout logged as a Redis outage:\n%s", out)
+			}
+			if _, locked := idem.records[andiID+":key-00000001"]; locked {
+				t.Error("idempotency key still locked; a retry would get in_progress")
+			}
+		})
+	}
+}
+
+// Every API request gets a deadline; /health doesn't need one.
+func TestAPIRequestsHaveADeadline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var deadline time.Time
+	var ok bool
+	s := deadlineSpy{fakeStore: demoStore(0), seen: func(ctx context.Context) { deadline, ok = ctx.Deadline() }}
+	start := time.Now()
+	if w := get(testRouter(s), "/v1/accounts", andiID); w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	end := time.Now()
+	if !ok || deadline.Before(start.Add(requestTimeout)) || deadline.After(end.Add(requestTimeout)) {
+		t.Errorf("deadline = %v after start (set: %v), want %v", deadline.Sub(start), ok, requestTimeout)
+	}
+}
+
+type deadlineSpy struct {
+	fakeStore
+	seen func(context.Context)
+}
+
+func (d deadlineSpy) ListAccounts(ctx context.Context, userID string) ([]db.ListAccountsRow, error) {
+	d.seen(ctx)
+	return d.fakeStore.ListAccounts(ctx, userID)
 }

@@ -7,6 +7,7 @@ export { Icon, type IconName } from './Icon';
 export { IconButton } from './IconButton';
 export { Keypad, applyKey, type KeypadKey } from './Keypad';
 export { ListRow } from './ListRow';
+export { LoadMoreFooter } from './LoadMoreFooter';
 export { Notice } from './Notice';
 export { Pill } from './Pill';
 export { ProgressBar } from './ProgressBar';

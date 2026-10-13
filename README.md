@@ -37,7 +37,8 @@ All app endpoints are under `/v1`. Request and response bodies are JSON.
 - **Times** are RFC 3339 in UTC, e.g. `"2026-10-13T07:42:00Z"`.
 - **Errors** are `{"error": "message for the user", "code": "machine_code"}`. `code` is optional; clients branch on `code` and display `error`.
 - **Auth (demo only):** after sign-in, send `X-User-ID: <user uuid>` on every request. There are no passwords or tokens yet.
-- **Lists** are newest first. An optional `limit` query parameter must be a positive integer.
+- **Lists** are newest first and paged by cursor. `limit` is the page size (default 20, at most 100). Each response has `nextCursor`: pass it back as `cursor` for the next page; it is `null` on the last page. Cursors are opaque and stay valid while new rows arrive (no skipped or repeated rows).
+- **Timeouts:** each `/v1` request has 10 s. A request that runs out returns `503` with code `timeout`; for a money-moving request the outcome is unknown, so retry with the same `Idempotency-Key`.
 - **Request ids:** every response carries `X-Request-ID` (the client's, if well-formed, or a generated one) for finding the request in the logs.
 
 ### Endpoints
@@ -77,9 +78,9 @@ All app endpoints are under `/v1`. Request and response bodies are JSON.
 
 System accounts (campaign budgets, funding) are never returned.
 
-#### `GET /v1/transactions?limit=20`
+#### `GET /v1/transactions?limit=20&cursor=…&kind=out&q=kopi`
 
-Main account activity. `kind` is `in`, `out` or `cashback` (a redemption credit). A payment that earned cash back includes `cashback`.
+Main account activity. `kind` is `in`, `out` or `cashback` (a redemption credit). A payment that earned cash back includes `cashback`. Optional filters: `kind`, and `q` (case-insensitive text in the name, at most 100 characters). Filters apply before paging, so every page holds only matches.
 
 ```json
 {
@@ -90,9 +91,12 @@ Main account activity. `kind` is `in`, `out` or `cashback` (a redemption credit)
       "cashback": { "value": "1750.00", "currency": "IDR" },
       "createdAt": "2026-10-13T01:42:00Z"
     }
-  ]
+  ],
+  "nextCursor": "MTc5MTg4OTYxNDI3MzU4OF9hM2Y…"
 }
 ```
+
+`400` for a `limit` outside 1–100, an unknown `kind`, or a `q` that's too long; `400` `invalid_cursor` for a cursor the server didn't issue.
 
 #### `POST /v1/payments`
 
@@ -127,6 +131,7 @@ Headers: `X-User-ID`, `Idempotency-Key`.
 | 422 | `unsupported_currency` | User has no account in that currency |
 | 422 | `idempotency_key_reused` | Same key, different request |
 | 503 | `unavailable` | Idempotency store (Redis) unreachable; nothing was done |
+| 503 | `timeout` | Took longer than 10 s; outcome unknown, retry with the same key |
 
 A replayed response carries the header `Idempotent-Replayed: true`.
 
@@ -150,7 +155,9 @@ A replayed response carries the header `Idempotent-Replayed: true`.
 
 `resetAt` is the next midnight in the campaign's time zone (Asia/Jakarta), expressed in UTC.
 
-#### `GET /v1/cashback/history?currency=IDR&limit=20`
+#### `GET /v1/cashback/history?currency=IDR&limit=20&cursor=…`
+
+Paged like `/v1/transactions`; `balance` is on every page.
 
 ```json
 {
@@ -160,7 +167,8 @@ A replayed response carries the header `Idempotent-Replayed: true`.
       "amount": { "value": "1750.00", "currency": "IDR" }, "createdAt": "…" },
     { "id": "…", "name": "Cash back redeemed", "description": "To available balance", "kind": "out",
       "amount": { "value": "-5000.00", "currency": "IDR" }, "createdAt": "…" }
-  ]
+  ],
+  "nextCursor": null
 }
 ```
 
@@ -189,7 +197,7 @@ Errors mirror payments (`insufficient_funds` here means more than the cash back 
 
 ## Database design
 
-PostgreSQL, with every schema change a [goose](https://github.com/pressly/goose) migration in [`server/migrations/`](server/migrations), applied on startup. SQL is hand-written in [`server/queries/`](server/queries) and compiled to typed Go by sqlc.
+PostgreSQL, with every schema change a [goose](https://github.com/pressly/goose) migration in [`server/migrations/`](server/migrations), applied on startup. Before the first release the development migrations were squashed into one, `00001_init.sql`. SQL is hand-written in [`server/queries/`](server/queries) and compiled to typed Go by sqlc.
 
 ```mermaid
 erDiagram

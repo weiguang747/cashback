@@ -48,7 +48,7 @@ func TestRedeemMovesCashbackToMain(t *testing.T) {
 	}
 
 	// The cash back history shows the redemption as money out.
-	history, _ := db.New(pool).ListCashbackTransactions(context.Background(), db.ListCashbackTransactionsParams{UserID: u.id, Currency: "IDR"})
+	history, _ := db.New(pool).ListCashbackTransactions(context.Background(), db.ListCashbackTransactionsParams{UserID: u.id, Currency: "IDR", Limit: 100})
 	if len(history) == 0 || history[0].AmountMinor != -350_000 || history[0].Name != "Cash back redeemed" {
 		t.Errorf("latest cash back row = %+v, want -350000 'Cash back redeemed'", history)
 	}

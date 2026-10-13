@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -60,28 +62,48 @@ type transaction struct {
 
 type transactionsResponse struct {
 	Transactions []transaction `json:"transactions"`
+	// Pass as ?cursor= for the next page; null on the last page.
+	NextCursor *string `json:"nextCursor"`
 }
 
-// listTransactions returns the signed-in user's main-account transactions, newest first.
-// Optional query param: limit (positive integer).
+// maxSearchLen bounds ?q=, in characters.
+const maxSearchLen = 100
+
+// listTransactions returns one page of the signed-in user's main-account
+// transactions, newest first. Query params, all optional: limit and cursor
+// (see paging.go), kind ("in", "out" or "cashback") and q (case-insensitive
+// text in the name).
 func listTransactions(s store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var limit *int32
-		if q := c.Query("limit"); q != "" {
-			n, err := strconv.ParseInt(q, 10, 32)
-			if err != nil || n < 1 {
-				httpx.Error(c, http.StatusBadRequest, "limit must be a positive integer")
+		p, ok := pageParams(c)
+		if !ok {
+			return
+		}
+		params := db.ListTransactionsParams{
+			UserID: currentUser(c).ID, Limit: p.limit, BeforeCreatedAt: p.beforeCreatedAt, BeforeID: p.beforeID,
+		}
+		if k := c.Query("kind"); k != "" {
+			if k != "in" && k != "out" && k != "cashback" {
+				httpx.Error(c, http.StatusBadRequest, "kind must be in, out or cashback")
 				return
 			}
-			n32 := int32(n)
-			limit = &n32
+			params.Kind = &k
+		}
+		if q := strings.TrimSpace(c.Query("q")); q != "" {
+			if utf8.RuneCountInString(q) > maxSearchLen {
+				httpx.Error(c, http.StatusBadRequest, fmt.Sprintf("search must be at most %d characters", maxSearchLen))
+				return
+			}
+			pattern := "%" + likeEscaper.Replace(q) + "%"
+			params.NamePattern = &pattern
 		}
 
-		rows, err := s.ListTransactions(c.Request.Context(), db.ListTransactionsParams{UserID: currentUser(c).ID, Limit: limit})
+		rows, err := s.ListTransactions(c.Request.Context(), params)
 		if err != nil {
 			httpx.InternalError(c, "list transactions failed", err)
 			return
 		}
+		rows, next := trim(p, rows, func(r db.ListTransactionsRow) (time.Time, string) { return r.CreatedAt, r.ID })
 
 		txns := make([]transaction, 0, len(rows))
 		for _, r := range rows {
@@ -91,9 +113,12 @@ func listTransactions(s store) gin.HandlerFunc {
 			}
 			txns = append(txns, t)
 		}
-		c.JSON(http.StatusOK, transactionsResponse{Transactions: txns})
+		c.JSON(http.StatusOK, transactionsResponse{Transactions: txns, NextCursor: next})
 	}
 }
+
+// likeEscaper makes user text match literally inside an ILIKE pattern.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // txRow is the shape every transaction query shares.
 type txRow struct {

@@ -1,8 +1,9 @@
 import { useCallback } from 'react';
 
-import { getTransactions, type Transaction } from './api';
+import { getTransactions, type Transaction, type TransactionKind } from './api';
 import { deviceLocale } from './locale';
 import { useApi } from './useApi';
+import { usePages } from './usePages';
 
 /** "Today", "Yesterday", "10 Oct", or "10 Oct 2025" in the device locale and time zone. */
 export function dayLabel(date: Date, now = new Date()): string {
@@ -66,8 +67,30 @@ function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-/** Loads the signed-in user's transactions, newest first. */
-export function useTransactions(limit?: number) {
-  const fetcher = useCallback((signal: AbortSignal) => getTransactions({ limit, signal }), [limit]);
+/** The signed-in user's `count` most recent transactions (one page). */
+export function useRecentTransactions(count: number) {
+  const fetcher = useCallback(
+    (signal: AbortSignal) => getTransactions({ limit: count, signal }).then((page) => page.transactions),
+    [count],
+  );
   return useApi(fetcher);
+}
+
+/**
+ * The signed-in user's transactions, newest first, a page at a time (see
+ * `usePages`). `kind` and `q` filter on the server; a change starts again
+ * from the first page.
+ */
+export function useTransactionPages(filter: { kind?: TransactionKind; q?: string } = {}) {
+  const { kind, q } = filter;
+  const fetchPage = useCallback(
+    (cursor: string | null, signal: AbortSignal) =>
+      getTransactions({ cursor, kind, q, signal }).then((page) => ({
+        items: page.transactions,
+        nextCursor: page.nextCursor,
+        meta: undefined,
+      })),
+    [kind, q],
+  );
+  return usePages(fetchPage);
 }

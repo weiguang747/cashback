@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -48,6 +49,25 @@ func UseJSONErrors(r *gin.Engine) {
 	})
 }
 
+// Timeout gives each request a deadline. Database and Redis calls take the
+// request context, so a query stuck behind a lock or a slow network stops
+// at the deadline and releases its pool connection, instead of piling up
+// until the pool is exhausted. Handlers that fail this way answer 503
+// "timeout" (see InternalError).
+func Timeout(d time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), d)
+		defer cancel()
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+}
+
+// TimedOut reports whether the request ran past its Timeout deadline.
+func TimedOut(c *gin.Context) bool {
+	return errors.Is(c.Request.Context().Err(), context.DeadlineExceeded)
+}
+
 // ClientGone reports whether the client has disconnected, which cancels the
 // request context and makes any database or Redis call in flight fail.
 func ClientGone(c *gin.Context) bool {
@@ -57,12 +77,19 @@ func ClientGone(c *gin.Context) bool {
 // InternalError ends a request that failed unexpectedly: it logs err and
 // returns a generic 500 without internal details. If the client already
 // disconnected, the failure is only the cancellation, not a server fault, so
-// it is logged at info with client_canceled and recorded as 499.
+// it is logged at info with client_canceled and recorded as 499. If the
+// request ran out of time, it is a server fault (logged at error with
+// timed_out) but a temporary one: 503 "timeout", so clients retry.
 func InternalError(c *gin.Context, msg string, err error) {
 	log := logx.From(c.Request.Context())
 	if ClientGone(c) {
 		log.Info(msg, slog.Bool("client_canceled", true), logx.Err(err))
 		Error(c, StatusClientClosedRequest, "request canceled")
+		return
+	}
+	if TimedOut(c) {
+		log.Error(msg, slog.Bool("timed_out", true), logx.Err(err))
+		ErrorCode(c, http.StatusServiceUnavailable, "timeout", "the server took too long to respond, please try again")
 		return
 	}
 	log.Error(msg, logx.Err(err))

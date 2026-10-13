@@ -46,8 +46,9 @@ func runIdempotent(c *gin.Context, idem idempotency.Store, key, fingerprint stri
 
 	begin, err := idem.Begin(ctx, scope, key, fingerprint)
 	if err != nil {
-		if httpx.ClientGone(c) {
-			// Not a Redis outage: the client left before the lock was taken.
+		if httpx.ClientGone(c) || httpx.TimedOut(c) {
+			// Not a Redis outage: the client left, or the request ran out of
+			// time, before the lock was taken.
 			httpx.InternalError(c, "idempotency lock abandoned", err)
 			return
 		}
@@ -77,8 +78,9 @@ func runIdempotent(c *gin.Context, idem idempotency.Store, key, fingerprint stri
 
 	out, err := run()
 	if err != nil {
-		// Also right when the client canceled: the transaction rolled back, or
-		// (if the cancel raced COMMIT) the retry hits the database backstop.
+		// Also right when the client canceled or the request timed out: the
+		// transaction rolled back, or (if that raced COMMIT) the retry hits
+		// the database backstop.
 		if err := idem.Release(bg, scope, key); err != nil {
 			// The key stays locked until its pending TTL expires.
 			log.Error("idempotency release failed", logx.Err(err))

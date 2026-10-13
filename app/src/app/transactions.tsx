@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, SectionList, StyleSheet, View } from 'react-native';
 
-import { Button, Chip, Screen, ScreenHeader, Spinner, Text, TextField, TransactionRow } from '@/components';
+import { Button, Chip, LoadMoreFooter, Screen, ScreenHeader, Spinner, Text, TextField, TransactionRow } from '@/components';
 import type { TransactionKind } from '@/lib/api';
-import { groupByDay, timeLabel, useTransactions } from '@/lib/transactions';
+import { groupByDay, timeLabel, useTransactionPages } from '@/lib/transactions';
+import { useDebounced } from '@/lib/useDebounced';
 import { colors, spacing } from '@/theme';
 
 type Filter = 'all' | TransactionKind;
@@ -15,21 +16,26 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'cashback', label: 'Cash back' },
 ];
 
-/** Full history, grouped by day, with search and type filters. */
+/** Wait this long after the last keystroke before searching. */
+const SEARCH_DELAY_MS = 300;
+
+/**
+ * Full history, grouped by day, with search and type filters. Rows load a
+ * page at a time as the user scrolls; search and filters run on the server,
+ * so they cover the whole history, not just the pages loaded so far.
+ */
 export default function TransactionsScreen() {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
-  const { data, error, loading, reload } = useTransactions();
+  const search = useDebounced(query.trim(), SEARCH_DELAY_MS);
+  const { items: data, error, loading, loadingMore, moreError, hasMore, reload, loadMore } = useTransactionPages({
+    kind: filter === 'all' ? undefined : filter,
+    q: search || undefined,
+  });
 
-  const sections = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const matches = (data ?? []).filter(
-      (t) => (filter === 'all' || t.kind === filter) && (!q || t.name.toLowerCase().includes(q)),
-    );
-    return groupByDay(matches);
-  }, [data, filter, query]);
+  const sections = useMemo(() => groupByDay(data ?? []), [data]);
 
-  const filtered = filter !== 'all' || query.trim() !== '';
+  const filtered = filter !== 'all' || search !== '';
 
   return (
     <Screen>
@@ -67,6 +73,10 @@ export default function TransactionsScreen() {
           <TransactionRow transaction={item} subtitle={`${timeLabel(new Date(item.createdAt))} · ${item.description}`} />
         )}
         refreshControl={<RefreshControl refreshing={loading && data !== null} onRefresh={reload} />}
+        // A failed page waits for "Try again" rather than retrying on every scroll.
+        onEndReached={hasMore && !moreError ? loadMore : undefined}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={<LoadMoreFooter loading={loadingMore} error={moreError} onRetry={loadMore} />}
         ListHeaderComponent={
           error && data ? (
             <Text variant="caption" color="danger" accessibilityRole="alert" style={styles.refreshError}>

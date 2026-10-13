@@ -69,6 +69,7 @@ npx expo start                                   # then i / a, or open exp://127
 | `src/features/<area>/` | Components specific to one area (`wallet/BalanceCard`, `cashback/CashbackBanner`, …) |
 | `src/lib/api.ts` | The only place that calls `fetch`: types mirroring the API, `ApiError`, request helpers |
 | `src/lib/useApi.ts` | Generic load/reload hook; `accounts.ts`, `transactions.ts` and `cashback.ts` build data hooks on it |
+| `src/lib/usePages.ts` | Cursor-paged lists: first page, `loadMore` for `onEndReached`, restart when the query changes |
 | `src/lib/session.ts` | Signed-in user: in memory + SecureStore |
 | `src/lib/format.ts` | Money formatting and exact money arithmetic |
 | `src/lib/locale.ts` | Device locale, region currency, 12/24-hour setting |
@@ -93,7 +94,8 @@ npx expo start                                   # then i / a, or open exp://127
 
 ## Data loading
 
-- Screens get data from hooks built on `useApi` (`useAccounts`, `useTransactions`, `useCampaign`, `useCashbackHistory`).
+- Screens get data from hooks built on `useApi` (`useAccounts`, `useRecentTransactions`, `useCampaign`) or, for lists, `usePages` (`useTransactionPages`, `useCashbackHistory`).
+- **Lists are paged by the server** (20 rows per page, `nextCursor`). Load more with `onEndReached` → `loadMore` and show `LoadMoreFooter`; after a failed page, wait for "Try again" instead of retrying on every scroll. **Filter and search on the server** (`kind`, `q` on `getTransactions`), never over the rows loaded so far: they're only part of the history. Debounce typed search (`useDebounced`).
 - `data` stays populated when a reload fails, so screens show stale data alongside the error instead of blanking.
 - State is only set in promise callbacks (the `react-hooks/set-state-in-effect` lint rule).
 - Home reloads its hooks on focus (`useFocusEffect`, skipping the first), so balances update after paying or redeeming. Do the same for any screen showing balances.

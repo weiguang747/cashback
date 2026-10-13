@@ -313,7 +313,7 @@ func TestEarnedCashbackIsListed(t *testing.T) {
 	payAt(t, pool, other, 3_500_000, noon) // someone else's
 
 	q := db.New(pool)
-	rows, err := q.ListTransactions(ctx, db.ListTransactionsParams{UserID: u.id})
+	rows, err := q.ListTransactions(ctx, db.ListTransactionsParams{UserID: u.id, Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestEarnedCashbackIsListed(t *testing.T) {
 		}
 	}
 
-	history, err := q.ListCashbackTransactions(ctx, db.ListCashbackTransactionsParams{UserID: u.id, Currency: "IDR"})
+	history, err := q.ListCashbackTransactions(ctx, db.ListCashbackTransactionsParams{UserID: u.id, Currency: "IDR", Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}

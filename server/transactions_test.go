@@ -32,7 +32,15 @@ func TestListTransactions(t *testing.T) {
 		{"zero limit", andiID, "?limit=0", http.StatusBadRequest, 0},
 		{"negative limit", andiID, "?limit=-1", http.StatusBadRequest, 0},
 		{"non-numeric limit", andiID, "?limit=abc", http.StatusBadRequest, 0},
+		{"limit over the maximum", andiID, "?limit=101", http.StatusBadRequest, 0},
 		{"limit over int32", andiID, "?limit=9999999999", http.StatusBadRequest, 0},
+		{"kind filter", andiID, "?kind=in", http.StatusOK, 0},
+		{"unknown kind", andiID, "?kind=refund", http.StatusBadRequest, 0},
+		{"search", andiID, "?q=KOPI", http.StatusOK, 12},
+		{"search with no match", andiID, "?q=netflix", http.StatusOK, 0},
+		{"search too long", andiID, "?q=" + strings.Repeat("a", 101), http.StatusBadRequest, 0},
+		{"garbage cursor", andiID, "?cursor=not-a-cursor", http.StatusBadRequest, 0},
+		{"cursor with a bad id", andiID, "?cursor=" + encodeCursor(time.Now(), "x'; drop table"), http.StatusBadRequest, 0},
 		{"signed out", "", "", http.StatusUnauthorized, 0},
 	}
 
@@ -57,6 +65,85 @@ func TestListTransactions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Following nextCursor visits every row exactly once, newest first, and the
+// last page says there is no next one.
+func TestListTransactionsPaging(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := demoStore(12)
+	// Two rows at the same moment, either side of a page break: the id
+	// breaks the tie (descending, like the query).
+	rows := s.txns[andiID]
+	rows[5].CreatedAt = rows[4].CreatedAt
+	rows[4].ID, rows[5].ID = rows[5].ID, rows[4].ID
+	router := testRouter(s)
+
+	var seen []string
+	pages := 0
+	path := "/v1/transactions?limit=5"
+	for {
+		w := get(router, path, andiID)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d (body: %s)", w.Code, w.Body)
+		}
+		var resp struct {
+			Transactions []struct{ ID string } `json:"transactions"`
+			NextCursor   *string               `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		for _, tx := range resp.Transactions {
+			seen = append(seen, tx.ID)
+		}
+		if resp.NextCursor == nil {
+			break
+		}
+		path = "/v1/transactions?limit=5&cursor=" + *resp.NextCursor
+	}
+
+	if pages != 3 {
+		t.Errorf("pages = %d, want 3 (5 + 5 + 2)", pages)
+	}
+	if len(seen) != 12 {
+		t.Fatalf("saw %d rows, want 12: %v", len(seen), seen)
+	}
+	for i, id := range seen {
+		if id != s.txns[andiID][i].ID {
+			t.Errorf("row %d = %s, want %s", i, id, s.txns[andiID][i].ID)
+		}
+	}
+}
+
+// Search text is matched literally: LIKE wildcards in it are escaped.
+func TestListTransactionsSearchEscapesWildcards(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var got db.ListTransactionsParams
+	s := capturingTransactions{fakeStore: demoStore(0), got: &got}
+	if w := get(testRouter(s), `/v1/transactions?q=+50%25_off\+&kind=out`, andiID); w.Code != http.StatusOK {
+		t.Fatalf("status = %d (body: %s)", w.Code, w.Body)
+	}
+	if got.NamePattern == nil || *got.NamePattern != `%50\%\_off\\%` {
+		t.Errorf("pattern = %v, want %%50\\%%\\_off\\\\%%", got.NamePattern)
+	}
+	if got.Kind == nil || *got.Kind != "out" {
+		t.Errorf("kind = %v, want out", got.Kind)
+	}
+	if got.Limit != defaultPageSize+1 {
+		t.Errorf("limit = %d, want %d (page size + 1)", got.Limit, defaultPageSize+1)
+	}
+}
+
+type capturingTransactions struct {
+	fakeStore
+	got *db.ListTransactionsParams
+}
+
+func (c capturingTransactions) ListTransactions(ctx context.Context, arg db.ListTransactionsParams) ([]db.ListTransactionsRow, error) {
+	*c.got = arg
+	return c.fakeStore.ListTransactions(ctx, arg)
 }
 
 // Amounts go out as exact decimal strings with a currency, and times in UTC.
@@ -88,7 +175,7 @@ func TestListTransactionsJSONShape(t *testing.T) {
 func TestListTransactionsStoreError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	s := demoStore(1)
-	router := testRouter(failingTransactions{s})
+	router := testRouter(failingTransactions{s, errors.New("db down")})
 
 	w := get(router, "/v1/transactions", andiID)
 	if w.Code != http.StatusInternalServerError || strings.Contains(w.Body.String(), "db down") {
@@ -97,8 +184,11 @@ func TestListTransactionsStoreError(t *testing.T) {
 }
 
 // failingTransactions finds users but fails to list their transactions.
-type failingTransactions struct{ fakeStore }
+type failingTransactions struct {
+	fakeStore
+	err error
+}
 
-func (failingTransactions) ListTransactions(_ context.Context, _ db.ListTransactionsParams) ([]db.ListTransactionsRow, error) {
-	return nil, errors.New("db down")
+func (f failingTransactions) ListTransactions(_ context.Context, _ db.ListTransactionsParams) ([]db.ListTransactionsRow, error) {
+	return nil, f.err
 }

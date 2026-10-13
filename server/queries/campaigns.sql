@@ -60,14 +60,17 @@ ORDER BY (c.ends_at IS NULL OR c.ends_at > sqlc.arg('at')::timestamptz) DESC, c.
 LIMIT 1;
 
 -- name: ListCashbackTransactions :many
--- A user's cash back account activity, newest first. A NULL limit returns every row.
+-- One page of a user's cash back account activity, newest first. Paged by
+-- cursor like ListTransactions.
 SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at
 FROM transactions t
 JOIN accounts a ON a.id = t.account_id
 JOIN currencies c ON c.code = t.currency
 WHERE a.user_id = sqlc.arg('user_id')::uuid AND a.kind = 'cashback' AND a.currency = sqlc.arg('currency')
+  AND (t.created_at, t.id) < (COALESCE(sqlc.narg('before_created_at')::timestamptz, 'infinity'),
+                              COALESCE(sqlc.narg('before_id')::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
 ORDER BY t.created_at DESC, t.id DESC
-LIMIT sqlc.narg('limit');
+LIMIT sqlc.arg('limit')::int;
 
 -- name: ReconcileAwards :many
 -- Awards whose two halves don't match their amount. Should always be empty.

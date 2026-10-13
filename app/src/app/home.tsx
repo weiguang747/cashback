@@ -9,7 +9,7 @@ import { useAccounts } from '@/lib/accounts';
 import { useCampaign } from '@/lib/cashback';
 import { greeting } from '@/lib/locale';
 import { clearUser, useUser } from '@/lib/session';
-import { dayLabel, timeLabel, useTransactions } from '@/lib/transactions';
+import { dayLabel, timeLabel, useRecentTransactions } from '@/lib/transactions';
 import { colors, radii, spacing } from '@/theme';
 
 /** How many transactions Home shows before "See all". */
@@ -19,7 +19,7 @@ export default function HomeScreen() {
   const user = useUser();
   const accounts = useAccounts();
   const { data: campaign, reload: reloadCampaign } = useCampaign();
-  const { data: transactions, error, loading, reload } = useTransactions(RECENT_COUNT);
+  const { data: transactions, error, loading, reload } = useRecentTransactions(RECENT_COUNT);
 
   // Refresh when coming back to Home (e.g. after paying). The first focus is
   // skipped because the hooks above already load on mount.

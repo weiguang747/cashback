@@ -6,13 +6,11 @@ package db
 
 import (
 	"time"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Account struct {
 	ID           string
-	UserID       pgtype.UUID
+	UserID       *string
 	Kind         string
 	Currency     string
 	BalanceMinor int64
@@ -54,13 +52,13 @@ type Currency struct {
 
 type Transaction struct {
 	ID             string
+	AccountID      string
 	Name           string
 	Description    string
 	Kind           string
 	AmountMinor    int64
 	Currency       string
 	CreatedAt      time.Time
-	AccountID      string
 	IdempotencyKey *string
 }
 

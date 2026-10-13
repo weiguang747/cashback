@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useMemo } from 'react';
 import { RefreshControl, SectionList, StyleSheet, View } from 'react-native';
 
-import { Amount, Button, EmptyState, Screen, ScreenHeader, Spinner, Text, TransactionRow } from '@/components';
+import { Amount, Button, EmptyState, LoadMoreFooter, Screen, ScreenHeader, Spinner, Text, TransactionRow } from '@/components';
 import { ratePercent, useCampaign, useCashbackHistory } from '@/lib/cashback';
 import { formatMoney, isZeroMoney } from '@/lib/format';
 import { groupByDay, timeLabel } from '@/lib/transactions';
@@ -10,9 +10,9 @@ import { colors, radii, spacing } from '@/theme';
 
 /** Cash back balance and every credit (and, later, redemption) behind it. */
 export default function CashbackScreen() {
-  const { data, error, loading, reload } = useCashbackHistory();
+  const { items, meta, error, loading, loadingMore, moreError, hasMore, reload, loadMore } = useCashbackHistory();
   const { data: campaign } = useCampaign();
-  const sections = useMemo(() => groupByDay(data?.transactions ?? []), [data]);
+  const sections = useMemo(() => groupByDay(items ?? []), [items]);
 
   const howToEarn =
     campaign?.status === 'active'
@@ -29,20 +29,24 @@ export default function CashbackScreen() {
         stickySectionHeadersEnabled={false}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.list}
-        refreshControl={<RefreshControl refreshing={loading && data !== null} onRefresh={reload} />}
+        refreshControl={<RefreshControl refreshing={loading && items !== null} onRefresh={reload} />}
+        // A failed page waits for "Try again" rather than retrying on every scroll.
+        onEndReached={hasMore && !moreError ? loadMore : undefined}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={<LoadMoreFooter loading={loadingMore} error={moreError} onRetry={loadMore} />}
         ListHeaderComponent={
-          data ? (
+          meta ? (
             <View style={styles.hero}>
               <Text variant="captionStrong" color="onRewardMuted">
                 Cash back balance
               </Text>
-              <Amount money={data.balance} size="md" color={colors.onReward} />
+              <Amount money={meta.balance} size="md" color={colors.onReward} />
               <Button
                 label="Redeem"
                 variant="secondary"
                 size="sm"
                 block={false}
-                disabled={isZeroMoney(data.balance)}
+                disabled={isZeroMoney(meta.balance)}
                 onPress={() => router.push('/redeem')}
                 style={styles.redeem}
               />
@@ -63,7 +67,7 @@ export default function CashbackScreen() {
           <TransactionRow transaction={item} subtitle={`${timeLabel(new Date(item.createdAt))} · ${item.description}`} />
         )}
         ListEmptyComponent={
-          data === null ? (
+          items === null ? (
             error ? (
               <View style={styles.status}>
                 <Text variant="bodySmall" color="textMuted" align="center">

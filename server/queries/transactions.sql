@@ -1,6 +1,10 @@
 -- name: ListTransactions :many
--- A user's main-account activity, newest first, with the cash back each
--- payment earned (NULL if none). A NULL limit returns every row.
+-- One page of a user's main-account activity, newest first, with the cash
+-- back each payment earned (NULL if none). The page starts after the cursor
+-- (created_at, id) of the previous page's last row; NULL starts at the
+-- newest. The cursor is always a row comparison, so even a generic plan
+-- seeks transactions_account_created_at_idx instead of scanning from the top.
+-- kind and name_pattern (ILIKE) are optional filters.
 SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at,
        ca.amount_minor AS cashback_minor
 FROM transactions t
@@ -8,8 +12,12 @@ JOIN accounts a ON a.id = t.account_id
 JOIN currencies c ON c.code = t.currency
 LEFT JOIN cashback_awards ca ON ca.payment_transaction_id = t.id
 WHERE a.user_id = sqlc.arg('user_id')::uuid AND a.kind = 'main'
+  AND (t.created_at, t.id) < (COALESCE(sqlc.narg('before_created_at')::timestamptz, 'infinity'),
+                              COALESCE(sqlc.narg('before_id')::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+  AND (sqlc.narg('kind')::text IS NULL OR t.kind = sqlc.narg('kind')::text)
+  AND (sqlc.narg('name_pattern')::text IS NULL OR t.name ILIKE sqlc.narg('name_pattern')::text)
 ORDER BY t.created_at DESC, t.id DESC
-LIMIT sqlc.narg('limit');
+LIMIT sqlc.arg('limit')::int;
 
 -- name: InsertTransaction :one
 INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at, idempotency_key)

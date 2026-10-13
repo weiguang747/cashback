@@ -317,14 +317,18 @@ FROM transactions t
 JOIN accounts a ON a.id = t.account_id
 JOIN currencies c ON c.code = t.currency
 WHERE a.user_id = $1::uuid AND a.kind = 'cashback' AND a.currency = $2
+  AND (t.created_at, t.id) < (COALESCE($3::timestamptz, 'infinity'),
+                              COALESCE($4::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
 ORDER BY t.created_at DESC, t.id DESC
-LIMIT $3
+LIMIT $5::int
 `
 
 type ListCashbackTransactionsParams struct {
-	UserID   string
-	Currency string
-	Limit    *int32
+	UserID          string
+	Currency        string
+	BeforeCreatedAt *time.Time
+	BeforeID        *string
+	Limit           int32
 }
 
 type ListCashbackTransactionsRow struct {
@@ -338,9 +342,16 @@ type ListCashbackTransactionsRow struct {
 	CreatedAt   time.Time
 }
 
-// A user's cash back account activity, newest first. A NULL limit returns every row.
+// One page of a user's cash back account activity, newest first. Paged by
+// cursor like ListTransactions.
 func (q *Queries) ListCashbackTransactions(ctx context.Context, arg ListCashbackTransactionsParams) ([]ListCashbackTransactionsRow, error) {
-	rows, err := q.db.Query(ctx, listCashbackTransactions, arg.UserID, arg.Currency, arg.Limit)
+	rows, err := q.db.Query(ctx, listCashbackTransactions,
+		arg.UserID,
+		arg.Currency,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

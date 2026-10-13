@@ -146,7 +146,7 @@ func TestPayInsufficientFundsChangesNothing(t *testing.T) {
 	if b := balanceOf(t, pool, u.main); b != 100 {
 		t.Errorf("balance = %d, want 100", b)
 	}
-	rows, _ := db.New(pool).ListTransactions(context.Background(), db.ListTransactionsParams{UserID: u.id})
+	rows, _ := db.New(pool).ListTransactions(context.Background(), db.ListTransactionsParams{UserID: u.id, Limit: 100})
 	if len(rows) != 1 {
 		t.Errorf("got %d transactions, want only the opening one", len(rows))
 	}

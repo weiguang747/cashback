@@ -40,11 +40,24 @@ export type Transaction = {
   cashback?: Money;
 };
 
-/** Transactions, newest first. Pass `limit` to get only the most recent ones. */
-export async function getTransactions(opts: { limit?: number; signal?: AbortSignal } = {}): Promise<Transaction[]> {
-  const query = opts.limit ? `?limit=${opts.limit}` : '';
-  const data = await request<{ transactions: Transaction[] }>(`/v1/transactions${query}`, { signal: opts.signal });
-  return data.transactions;
+/**
+ * Lists come a page at a time, newest first. `limit` is the page size
+ * (server default 20, at most 100). Pass a page's `nextCursor` as `cursor`
+ * to get the next one; it is null on the last page.
+ */
+export type PageOptions = { limit?: number; cursor?: string | null; signal?: AbortSignal };
+
+export type TransactionPage = { transactions: Transaction[]; nextCursor: string | null };
+
+/**
+ * One page of main account transactions. `kind` and `q` (text in the name,
+ * case-insensitive) filter on the server, so paging covers every match.
+ */
+export function getTransactions(
+  opts: PageOptions & { kind?: TransactionKind; q?: string } = {},
+): Promise<TransactionPage> {
+  const query = queryString({ limit: opts.limit, cursor: opts.cursor, kind: opts.kind, q: opts.q });
+  return request<TransactionPage>(`/v1/transactions${query}`, { signal: opts.signal });
 }
 
 export type Account = {
@@ -91,11 +104,20 @@ export async function getCampaign(opts: { signal?: AbortSignal } = {}): Promise<
   return data.campaign;
 }
 
-export type CashbackHistory = { balance: Money; transactions: Transaction[] };
+export type CashbackHistory = { balance: Money; transactions: Transaction[]; nextCursor: string | null };
 
-/** The cash back balance and its activity, newest first. */
-export function getCashbackHistory(opts: { signal?: AbortSignal } = {}): Promise<CashbackHistory> {
-  return request<CashbackHistory>('/v1/cashback/history', { signal: opts.signal });
+/** The cash back balance and one page of its activity, newest first. */
+export function getCashbackHistory(opts: PageOptions = {}): Promise<CashbackHistory> {
+  const query = queryString({ limit: opts.limit, cursor: opts.cursor });
+  return request<CashbackHistory>(`/v1/cashback/history${query}`, { signal: opts.signal });
+}
+
+/** "?a=1&b=x" from the params that are set; "" when none are. */
+function queryString(params: Record<string, string | number | null | undefined>): string {
+  const parts = Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`);
+  return parts.length ? `?${parts.join('&')}` : '';
 }
 
 /**
