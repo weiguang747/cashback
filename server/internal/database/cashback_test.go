@@ -336,3 +336,90 @@ func TestEarnedCashbackIsListed(t *testing.T) {
 		t.Errorf("history = %+v, want one +175000 'From Kopi Senja' row", history)
 	}
 }
+
+// One user's concurrent payments share a daily cap: each award must see the
+// awards committed before it, or the user would earn past the cap.
+func TestCashbackConcurrentPaymentsKeepDailyCap(t *testing.T) {
+	pool := openTestDB(t)
+	launch(t, pool, launchParams(1_000_000_000))
+	u := payingUser(t, pool, 1_000_000_000)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var total int64
+	for i := range 20 {
+		wg.Go(func() {
+			// Rp 100.000 earns Rp 5.000: 10 of these reach the Rp 50.000 cap.
+			r, err := Pay(context.Background(), pool, PayParams{
+				UserID: u.id, AccountID: u.main, Currency: "IDR", AmountMinor: 10_000_000,
+				MerchantName: "Kopi Senja", IdempotencyKey: fmt.Sprintf("cap-%d", i), Now: noon,
+			})
+			if err != nil {
+				t.Errorf("pay %d: %v", i, err)
+				return
+			}
+			mu.Lock()
+			total += r.Cashback.AmountMinor
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+
+	if total != 5_000_000 {
+		t.Errorf("total awarded = %d, want exactly the daily cap 5000000", total)
+	}
+	if b := balanceOf(t, pool, u.cashback); b != 5_000_000 {
+		t.Errorf("cash back balance = %d, want 5000000", b)
+	}
+	assertLedger(t, pool)
+}
+
+// Ending a campaign while payments are being awarded neither deadlocks nor
+// returns more budget than is left.
+func TestEndCampaignDuringPayments(t *testing.T) {
+	pool := openTestDB(t)
+	ctx := context.Background()
+	id, account := launch(t, pool, launchParams(1_000_000_000))
+
+	users := make([]testUser, 10)
+	for i := range users {
+		users[i] = payingUser(t, pool, 1_000_000_000)
+	}
+	var wg sync.WaitGroup
+	for _, u := range users {
+		wg.Go(func() {
+			for i := range 5 {
+				if _, err := Pay(ctx, pool, PayParams{
+					UserID: u.id, AccountID: u.main, Currency: "IDR", AmountMinor: 3_500_000,
+					MerchantName: "Kopi Senja", IdempotencyKey: fmt.Sprintf("end-%s-%d", u.id, i),
+				}); err != nil {
+					t.Errorf("pay: %v", err)
+				}
+			}
+		})
+	}
+	wg.Go(func() {
+		time.Sleep(5 * time.Millisecond)
+		if _, err := EndCampaign(ctx, pool, id); err != nil {
+			t.Errorf("end campaign: %v", err)
+		}
+	})
+	wg.Wait()
+
+	if b := balanceOf(t, pool, account); b != 0 {
+		t.Errorf("campaign account = %d after ending, want 0", b)
+	}
+	assertLedger(t, pool)
+}
+
+// A user without a cash back account can still pay during a campaign when
+// the payment earns nothing.
+func TestCashbackBelowMinimumWithoutCashbackAccount(t *testing.T) {
+	pool := openTestDB(t)
+	launch(t, pool, launchParams(1_000_000_000))
+	u := payingUser(t, pool, 1_000_000_000)
+	if _, err := pool.Exec(context.Background(), "DELETE FROM accounts WHERE id = $1", u.cashback); err != nil {
+		t.Fatal(err)
+	}
+	wantCashback(t, payAt(t, pool, u, 1_000_000, noon), 0, cashback.BelowMinimum)
+}

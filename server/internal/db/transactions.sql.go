@@ -49,6 +49,62 @@ func (q *Queries) GetTransactionByIdempotencyKey(ctx context.Context, arg GetTra
 	return i, err
 }
 
+const insertPayment = `-- name: InsertPayment :one
+INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, name, description, kind, amount_minor, currency,
+          (SELECT c.minor_unit FROM currencies c WHERE c.code = transactions.currency) AS minor_unit, created_at
+`
+
+type InsertPaymentParams struct {
+	AccountID      string
+	Name           string
+	Description    string
+	Kind           string
+	AmountMinor    int64
+	Currency       string
+	CreatedAt      time.Time
+	IdempotencyKey *string
+}
+
+type InsertPaymentRow struct {
+	ID          string
+	Name        string
+	Description string
+	Kind        string
+	AmountMinor int64
+	Currency    string
+	MinorUnit   int16
+	CreatedAt   time.Time
+}
+
+// Records a payment and returns it as GetTransactionByIdempotencyKey
+// would, so Pay needn't read it back.
+func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) (InsertPaymentRow, error) {
+	row := q.db.QueryRow(ctx, insertPayment,
+		arg.AccountID,
+		arg.Name,
+		arg.Description,
+		arg.Kind,
+		arg.AmountMinor,
+		arg.Currency,
+		arg.CreatedAt,
+		arg.IdempotencyKey,
+	)
+	var i InsertPaymentRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Kind,
+		&i.AmountMinor,
+		&i.Currency,
+		&i.MinorUnit,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertTransaction = `-- name: InsertTransaction :one
 INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at, idempotency_key)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

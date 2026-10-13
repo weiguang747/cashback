@@ -63,7 +63,7 @@ func TestPayConcurrentNeverOverdraws(t *testing.T) {
 	for i := range 10 {
 		wg.Go(func() {
 			_, err := Pay(context.Background(), pool, PayParams{
-				AccountID: u.main, Currency: "IDR", AmountMinor: 30, MerchantName: "Kopi",
+				UserID: u.id, AccountID: u.main, Currency: "IDR", AmountMinor: 30, MerchantName: "Kopi",
 				IdempotencyKey: fmt.Sprintf("concurrent-%d", i),
 			})
 			mu.Lock()
@@ -95,7 +95,7 @@ func TestPayIdempotencyBackstop(t *testing.T) {
 	pool := openTestDB(t)
 	ctx := context.Background()
 	u := payingUser(t, pool, 1_000)
-	p := PayParams{AccountID: u.main, Currency: "IDR", AmountMinor: 300, MerchantName: "Kopi", IdempotencyKey: "same-key-1"}
+	p := PayParams{UserID: u.id, AccountID: u.main, Currency: "IDR", AmountMinor: 300, MerchantName: "Kopi", IdempotencyKey: "same-key-1"}
 
 	var wg sync.WaitGroup
 	results := make([]PayResult, 5)
@@ -139,7 +139,7 @@ func TestPayInsufficientFundsChangesNothing(t *testing.T) {
 	pool := openTestDB(t)
 	u := payingUser(t, pool, 100)
 
-	_, err := Pay(context.Background(), pool, PayParams{AccountID: u.main, Currency: "IDR", AmountMinor: 101, MerchantName: "Kopi", IdempotencyKey: "too-much-1"})
+	_, err := Pay(context.Background(), pool, PayParams{UserID: u.id, AccountID: u.main, Currency: "IDR", AmountMinor: 101, MerchantName: "Kopi", IdempotencyKey: "too-much-1"})
 	if !errors.Is(err, ErrInsufficientFunds) {
 		t.Fatalf("err = %v, want ErrInsufficientFunds", err)
 	}

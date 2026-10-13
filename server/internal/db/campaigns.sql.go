@@ -226,34 +226,6 @@ func (q *Queries) GetUserAccount(ctx context.Context, arg GetUserAccountParams) 
 	return i, err
 }
 
-const insertCashbackAward = `-- name: InsertCashbackAward :exec
-INSERT INTO cashback_awards (campaign_id, user_id, payment_transaction_id, debit_transaction_id, credit_transaction_id, amount_minor, campaign_day)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-`
-
-type InsertCashbackAwardParams struct {
-	CampaignID           string
-	UserID               string
-	PaymentTransactionID string
-	DebitTransactionID   string
-	CreditTransactionID  string
-	AmountMinor          int64
-	CampaignDay          time.Time
-}
-
-func (q *Queries) InsertCashbackAward(ctx context.Context, arg InsertCashbackAwardParams) error {
-	_, err := q.db.Exec(ctx, insertCashbackAward,
-		arg.CampaignID,
-		arg.UserID,
-		arg.PaymentTransactionID,
-		arg.DebitTransactionID,
-		arg.CreditTransactionID,
-		arg.AmountMinor,
-		arg.CampaignDay,
-	)
-	return err
-}
-
 const listCampaigns = `-- name: ListCampaigns :many
 SELECT c.id, c.name, c.currency, cur.minor_unit, c.rate_bps, c.min_spend_minor, c.daily_cap_minor,
        c.budget_minor, a.balance_minor AS remaining_minor, c.timezone, c.starts_at, c.ends_at
@@ -381,16 +353,25 @@ func (q *Queries) ListCashbackTransactions(ctx context.Context, arg ListCashback
 
 const lockActiveCampaign = `-- name: LockActiveCampaign :one
 SELECT c.id, c.account_id, c.rate_bps, c.min_spend_minor, c.daily_cap_minor, c.award_increment_minor,
-       c.starts_at, ($1::timestamptz AT TIME ZONE c.timezone)::date AS campaign_day
+       c.starts_at, ($1::timestamptz AT TIME ZONE c.timezone)::date AS campaign_day,
+       a.balance_minor AS budget_minor,
+       (SELECT COALESCE(SUM(ca.amount_minor), 0) FROM cashback_awards ca
+        WHERE ca.campaign_id = c.id AND ca.user_id = $2::uuid
+          AND ca.campaign_day = ($1::timestamptz AT TIME ZONE c.timezone)::date
+       )::bigint AS awarded_today_minor,
+       cb.id AS cashback_account_id
 FROM campaigns c
-WHERE c.currency = $2
+JOIN accounts a ON a.id = c.account_id
+LEFT JOIN accounts cb ON cb.user_id = $2::uuid AND cb.kind = 'cashback' AND cb.currency = c.currency
+WHERE c.currency = $3
   AND c.starts_at <= $1
   AND (c.ends_at IS NULL OR c.ends_at > $1)
-FOR UPDATE
+FOR UPDATE OF c, a
 `
 
 type LockActiveCampaignParams struct {
 	At       time.Time
+	UserID   string
 	Currency string
 }
 
@@ -403,13 +384,24 @@ type LockActiveCampaignRow struct {
 	AwardIncrementMinor int64
 	StartsAt            time.Time
 	CampaignDay         time.Time
+	BudgetMinor         int64
+	AwardedTodayMinor   int64
+	CashbackAccountID   *string
 }
 
-// The campaign live for a currency at a moment, locked so awards from one
-// budget (and ending the campaign) happen one at a time. Also returns the
-// moment's calendar day in the campaign's time zone.
+// The campaign live for a currency at a moment, with everything an award
+// needs, in one round trip: its budget left, the user's awards on the
+// moment's campaign day (in the campaign's time zone) and the user's cash
+// back account. The campaign and its budget account are locked, so awards
+// from one budget (and ending the campaign) happen one at a time.
+//
+// Locking both rows matters: if this waits for another payment, Postgres
+// re-reads the locked rows once it gets them, so budget_minor is current.
+// The awards sum may read from before the wait; that's safe because Pay
+// already holds this user's main account, so no other award for the user
+// can commit in between. The cash back account (not locked) never changes.
 func (q *Queries) LockActiveCampaign(ctx context.Context, arg LockActiveCampaignParams) (LockActiveCampaignRow, error) {
-	row := q.db.QueryRow(ctx, lockActiveCampaign, arg.At, arg.Currency)
+	row := q.db.QueryRow(ctx, lockActiveCampaign, arg.At, arg.UserID, arg.Currency)
 	var i LockActiveCampaignRow
 	err := row.Scan(
 		&i.ID,
@@ -420,6 +412,9 @@ func (q *Queries) LockActiveCampaign(ctx context.Context, arg LockActiveCampaign
 		&i.AwardIncrementMinor,
 		&i.StartsAt,
 		&i.CampaignDay,
+		&i.BudgetMinor,
+		&i.AwardedTodayMinor,
+		&i.CashbackAccountID,
 	)
 	return i, err
 }
@@ -428,7 +423,7 @@ const lockCampaign = `-- name: LockCampaign :one
 SELECT c.id, c.name, c.account_id, c.currency, c.starts_at, c.ends_at, a.balance_minor
 FROM campaigns c JOIN accounts a ON a.id = c.account_id
 WHERE c.id = $1
-FOR UPDATE OF c
+FOR UPDATE OF c, a
 `
 
 type LockCampaignRow struct {
@@ -441,6 +436,9 @@ type LockCampaignRow struct {
 	BalanceMinor int64
 }
 
+// Locks the campaign and its budget account, in that order (as Pay does).
+// Locking the account too means balance_minor is re-read after waiting for
+// a payment, instead of being what it was before that payment's award.
 func (q *Queries) LockCampaign(ctx context.Context, id string) (LockCampaignRow, error) {
 	row := q.db.QueryRow(ctx, lockCampaign, id)
 	var i LockCampaignRow
@@ -485,6 +483,90 @@ func (q *Queries) ReconcileAwards(ctx context.Context) ([]string, error) {
 	return items, nil
 }
 
+const recordAward = `-- name: RecordAward :one
+WITH debit AS (
+    UPDATE accounts SET balance_minor = balance_minor - $1::bigint
+    WHERE id = $2::uuid AND balance_minor >= $1::bigint
+    RETURNING balance_minor
+), debit_row AS (
+    INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at)
+    SELECT $2::uuid, 'Cash back', $3::text, 'out',
+           -$1::bigint, $4::char(3), $5::timestamptz
+    FROM debit
+    RETURNING id
+), credit AS (
+    UPDATE accounts SET balance_minor = balance_minor + $1::bigint
+    WHERE id = $6::uuid AND EXISTS (SELECT 1 FROM debit)
+    RETURNING balance_minor
+), credit_row AS (
+    INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at)
+    SELECT $6::uuid, 'Cash back', $7::text, 'cashback',
+           $1::bigint, $4::char(3), $5::timestamptz
+    FROM credit
+    RETURNING id
+), award AS (
+    INSERT INTO cashback_awards (campaign_id, user_id, payment_transaction_id, debit_transaction_id,
+                                 credit_transaction_id, amount_minor, campaign_day)
+    SELECT $8::uuid, $9::uuid, $10::uuid,
+           d.id, cr.id, $1::bigint, $11::date
+    FROM debit_row d, credit_row cr
+    RETURNING id
+), closed AS (
+    UPDATE campaigns
+    SET ends_at = GREATEST($5::timestamptz, starts_at + interval '1 microsecond')
+    WHERE id = $8::uuid AND (ends_at IS NULL OR ends_at > $5::timestamptz)
+      AND EXISTS (SELECT 1 FROM debit WHERE balance_minor = 0)
+    RETURNING id
+)
+SELECT debit.balance_minor AS budget_left_minor, EXISTS (SELECT 1 FROM closed) AS campaign_ended
+FROM debit, award
+`
+
+type RecordAwardParams struct {
+	AmountMinor          int64
+	CampaignAccountID    string
+	DebitDescription     string
+	Currency             string
+	At                   time.Time
+	CashbackAccountID    string
+	CreditDescription    string
+	CampaignID           string
+	UserID               string
+	PaymentTransactionID string
+	CampaignDay          time.Time
+}
+
+type RecordAwardRow struct {
+	BudgetLeftMinor int64
+	CampaignEnded   bool
+}
+
+// Pays a cash back award in one statement (one round trip, while the
+// campaign is locked): out of the campaign budget (conditional, so it can
+// never overdraw) and into the user's cash back account, each half with
+// its ledger row, plus the cashback_awards row linking them to the
+// payment. When the budget reaches zero the campaign ends in the same
+// statement. Every part runs or none does: if the debit matches no row,
+// nothing is written and no row is returned.
+func (q *Queries) RecordAward(ctx context.Context, arg RecordAwardParams) (RecordAwardRow, error) {
+	row := q.db.QueryRow(ctx, recordAward,
+		arg.AmountMinor,
+		arg.CampaignAccountID,
+		arg.DebitDescription,
+		arg.Currency,
+		arg.At,
+		arg.CashbackAccountID,
+		arg.CreditDescription,
+		arg.CampaignID,
+		arg.UserID,
+		arg.PaymentTransactionID,
+		arg.CampaignDay,
+	)
+	var i RecordAwardRow
+	err := row.Scan(&i.BudgetLeftMinor, &i.CampaignEnded)
+	return i, err
+}
+
 const upsertFundingAccount = `-- name: UpsertFundingAccount :one
 INSERT INTO accounts (kind, currency) VALUES ('funding', $1)
 ON CONFLICT (currency) WHERE kind = 'funding' DO UPDATE SET kind = EXCLUDED.kind
@@ -496,25 +578,6 @@ func (q *Queries) UpsertFundingAccount(ctx context.Context, currency string) (st
 	var id string
 	err := row.Scan(&id)
 	return id, err
-}
-
-const userAwardedOnDay = `-- name: UserAwardedOnDay :one
-SELECT COALESCE(SUM(amount_minor), 0)::bigint
-FROM cashback_awards
-WHERE campaign_id = $1 AND user_id = $2 AND campaign_day = $3
-`
-
-type UserAwardedOnDayParams struct {
-	CampaignID  string
-	UserID      string
-	CampaignDay time.Time
-}
-
-func (q *Queries) UserAwardedOnDay(ctx context.Context, arg UserAwardedOnDayParams) (int64, error) {
-	row := q.db.QueryRow(ctx, userAwardedOnDay, arg.CampaignID, arg.UserID, arg.CampaignDay)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const validateTimezone = `-- name: ValidateTimezone :exec

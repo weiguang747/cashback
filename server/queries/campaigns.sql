@@ -1,19 +1,75 @@
 -- name: LockActiveCampaign :one
--- The campaign live for a currency at a moment, locked so awards from one
--- budget (and ending the campaign) happen one at a time. Also returns the
--- moment's calendar day in the campaign's time zone.
+-- The campaign live for a currency at a moment, with everything an award
+-- needs, in one round trip: its budget left, the user's awards on the
+-- moment's campaign day (in the campaign's time zone) and the user's cash
+-- back account. The campaign and its budget account are locked, so awards
+-- from one budget (and ending the campaign) happen one at a time.
+--
+-- Locking both rows matters: if this waits for another payment, Postgres
+-- re-reads the locked rows once it gets them, so budget_minor is current.
+-- The awards sum may read from before the wait; that's safe because Pay
+-- already holds this user's main account, so no other award for the user
+-- can commit in between. The cash back account (not locked) never changes.
 SELECT c.id, c.account_id, c.rate_bps, c.min_spend_minor, c.daily_cap_minor, c.award_increment_minor,
-       c.starts_at, (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date AS campaign_day
+       c.starts_at, (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date AS campaign_day,
+       a.balance_minor AS budget_minor,
+       (SELECT COALESCE(SUM(ca.amount_minor), 0) FROM cashback_awards ca
+        WHERE ca.campaign_id = c.id AND ca.user_id = sqlc.arg('user_id')::uuid
+          AND ca.campaign_day = (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date
+       )::bigint AS awarded_today_minor,
+       cb.id AS cashback_account_id
 FROM campaigns c
+JOIN accounts a ON a.id = c.account_id
+LEFT JOIN accounts cb ON cb.user_id = sqlc.arg('user_id')::uuid AND cb.kind = 'cashback' AND cb.currency = c.currency
 WHERE c.currency = sqlc.arg('currency')
   AND c.starts_at <= sqlc.arg('at')
   AND (c.ends_at IS NULL OR c.ends_at > sqlc.arg('at'))
-FOR UPDATE;
+FOR UPDATE OF c, a;
 
--- name: UserAwardedOnDay :one
-SELECT COALESCE(SUM(amount_minor), 0)::bigint
-FROM cashback_awards
-WHERE campaign_id = $1 AND user_id = $2 AND campaign_day = $3;
+-- name: RecordAward :one
+-- Pays a cash back award in one statement (one round trip, while the
+-- campaign is locked): out of the campaign budget (conditional, so it can
+-- never overdraw) and into the user's cash back account, each half with
+-- its ledger row, plus the cashback_awards row linking them to the
+-- payment. When the budget reaches zero the campaign ends in the same
+-- statement. Every part runs or none does: if the debit matches no row,
+-- nothing is written and no row is returned.
+WITH debit AS (
+    UPDATE accounts SET balance_minor = balance_minor - sqlc.arg('amount_minor')::bigint
+    WHERE id = sqlc.arg('campaign_account_id')::uuid AND balance_minor >= sqlc.arg('amount_minor')::bigint
+    RETURNING balance_minor
+), debit_row AS (
+    INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at)
+    SELECT sqlc.arg('campaign_account_id')::uuid, 'Cash back', sqlc.arg('debit_description')::text, 'out',
+           -sqlc.arg('amount_minor')::bigint, sqlc.arg('currency')::char(3), sqlc.arg('at')::timestamptz
+    FROM debit
+    RETURNING id
+), credit AS (
+    UPDATE accounts SET balance_minor = balance_minor + sqlc.arg('amount_minor')::bigint
+    WHERE id = sqlc.arg('cashback_account_id')::uuid AND EXISTS (SELECT 1 FROM debit)
+    RETURNING balance_minor
+), credit_row AS (
+    INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at)
+    SELECT sqlc.arg('cashback_account_id')::uuid, 'Cash back', sqlc.arg('credit_description')::text, 'cashback',
+           sqlc.arg('amount_minor')::bigint, sqlc.arg('currency')::char(3), sqlc.arg('at')::timestamptz
+    FROM credit
+    RETURNING id
+), award AS (
+    INSERT INTO cashback_awards (campaign_id, user_id, payment_transaction_id, debit_transaction_id,
+                                 credit_transaction_id, amount_minor, campaign_day)
+    SELECT sqlc.arg('campaign_id')::uuid, sqlc.arg('user_id')::uuid, sqlc.arg('payment_transaction_id')::uuid,
+           d.id, cr.id, sqlc.arg('amount_minor')::bigint, sqlc.arg('campaign_day')::date
+    FROM debit_row d, credit_row cr
+    RETURNING id
+), closed AS (
+    UPDATE campaigns
+    SET ends_at = GREATEST(sqlc.arg('at')::timestamptz, starts_at + interval '1 microsecond')
+    WHERE id = sqlc.arg('campaign_id')::uuid AND (ends_at IS NULL OR ends_at > sqlc.arg('at')::timestamptz)
+      AND EXISTS (SELECT 1 FROM debit WHERE balance_minor = 0)
+    RETURNING id
+)
+SELECT debit.balance_minor AS budget_left_minor, EXISTS (SELECT 1 FROM closed) AS campaign_ended
+FROM debit, award;
 
 -- name: AddToBalance :one
 -- Unconditional change; the accounts_balance_check constraint still keeps
@@ -26,10 +82,6 @@ RETURNING balance_minor;
 UPDATE campaigns
 SET ends_at = GREATEST(sqlc.arg('at')::timestamptz, starts_at + interval '1 microsecond')
 WHERE id = sqlc.arg('id') AND (ends_at IS NULL OR ends_at > sqlc.arg('at'));
-
--- name: InsertCashbackAward :exec
-INSERT INTO cashback_awards (campaign_id, user_id, payment_transaction_id, debit_transaction_id, credit_transaction_id, amount_minor, campaign_day)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: GetAwardByPayment :one
 SELECT campaign_id, amount_minor FROM cashback_awards WHERE payment_transaction_id = $1;
@@ -104,10 +156,13 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id;
 
 -- name: LockCampaign :one
+-- Locks the campaign and its budget account, in that order (as Pay does).
+-- Locking the account too means balance_minor is re-read after waiting for
+-- a payment, instead of being what it was before that payment's award.
 SELECT c.id, c.name, c.account_id, c.currency, c.starts_at, c.ends_at, a.balance_minor
 FROM campaigns c JOIN accounts a ON a.id = c.account_id
 WHERE c.id = $1
-FOR UPDATE OF c;
+FOR UPDATE OF c, a;
 
 -- name: ListCampaigns :many
 SELECT c.id, c.name, c.currency, cur.minor_unit, c.rate_bps, c.min_spend_minor, c.daily_cap_minor,

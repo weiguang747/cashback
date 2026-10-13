@@ -84,7 +84,7 @@ func Pay(ctx context.Context, pool *pgxpool.Pool, p PayParams) (PayResult, error
 	}
 
 	key := p.IdempotencyKey
-	paymentID, err := q.InsertTransaction(ctx, db.InsertTransactionParams{
+	payment, err := q.InsertPayment(ctx, db.InsertPaymentParams{
 		AccountID:      p.AccountID,
 		Name:           p.MerchantName,
 		Description:    "Payment",
@@ -103,27 +103,27 @@ func Pay(ctx context.Context, pool *pgxpool.Pool, p PayParams) (PayResult, error
 		return PayResult{}, fmt.Errorf("insert payment: %w", err)
 	}
 
-	cb, err := awardCashback(ctx, q, p, paymentID, now)
+	cb, err := awardCashback(ctx, q, p, payment.ID, now)
 	if err != nil {
 		return PayResult{}, fmt.Errorf("cash back: %w", err)
-	}
-
-	row, err := q.GetTransactionByIdempotencyKey(ctx, db.GetTransactionByIdempotencyKeyParams{AccountID: p.AccountID, IdempotencyKey: &key})
-	if err != nil {
-		return PayResult{}, fmt.Errorf("read payment: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return PayResult{}, fmt.Errorf("commit payment: %w", err)
 	}
-	return PayResult{Transaction: row, BalanceMinor: balance, Cashback: cb}, nil
+	return PayResult{Transaction: db.GetTransactionByIdempotencyKeyRow(payment), BalanceMinor: balance, Cashback: cb}, nil
 }
 
 // awardCashback applies the campaign live at the payment's time, if any.
 // An award moves money from the campaign account to the user's cash back
 // account as a pair of transactions, linked to the payment by a
 // cashback_awards row. When the budget reaches zero the campaign ends.
+//
+// Every awarding payment in a currency waits for the one campaign row, so
+// the time between locking it and committing limits payment throughput.
+// It is two statements: LockActiveCampaign reads everything the award
+// needs, and RecordAward writes it all. Keep it that way.
 func awardCashback(ctx context.Context, q *db.Queries, p PayParams, paymentID string, now time.Time) (*CashbackResult, error) {
-	campaign, err := q.LockActiveCampaign(ctx, db.LockActiveCampaignParams{Currency: p.Currency, At: now})
+	campaign, err := q.LockActiveCampaign(ctx, db.LockActiveCampaignParams{Currency: p.Currency, At: now, UserID: p.UserID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -132,73 +132,40 @@ func awardCashback(ctx context.Context, q *db.Queries, p PayParams, paymentID st
 	}
 	result := &CashbackResult{CampaignID: campaign.ID}
 
-	awardedToday, err := q.UserAwardedOnDay(ctx, db.UserAwardedOnDayParams{
-		CampaignID: campaign.ID, UserID: p.UserID, CampaignDay: campaign.CampaignDay,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("awarded today: %w", err)
-	}
-	budget, err := q.GetAccountBalance(ctx, campaign.AccountID)
-	if err != nil {
-		return nil, fmt.Errorf("campaign budget: %w", err)
-	}
-
 	amount, reason := cashback.Award(p.AmountMinor, cashback.Rules{
 		RateBps:        int64(campaign.RateBps),
 		MinSpend:       campaign.MinSpendMinor,
 		DailyCap:       campaign.DailyCapMinor,
 		AwardIncrement: campaign.AwardIncrementMinor,
-	}, cashback.State{AwardedToday: awardedToday, BudgetRemaining: budget})
+	}, cashback.State{AwardedToday: campaign.AwardedTodayMinor, BudgetRemaining: campaign.BudgetMinor})
 	result.Reason = reason
 	if amount == 0 {
 		return result, nil
 	}
 	result.AmountMinor = amount
 
-	cashbackAccount, err := q.GetUserAccount(ctx, db.GetUserAccountParams{UserID: p.UserID, Kind: "cashback", Currency: p.Currency})
-	if err != nil {
-		return nil, fmt.Errorf("cash back account: %w", err)
+	if campaign.CashbackAccountID == nil {
+		return nil, errors.New("no cash back account")
 	}
-
-	// Out of the budget (conditional, so it can never overdraw) ...
-	budgetLeft, err := q.DebitAccount(ctx, db.DebitAccountParams{ID: campaign.AccountID, AmountMinor: amount})
-	if err != nil {
-		return nil, fmt.Errorf("debit campaign: %w", err)
-	}
-	debitID, err := q.InsertTransaction(ctx, db.InsertTransactionParams{
-		AccountID: campaign.AccountID, Name: "Cash back", Description: "Award for payment " + paymentID,
-		Kind: "out", AmountMinor: -amount, Currency: p.Currency, CreatedAt: now,
+	award, err := q.RecordAward(ctx, db.RecordAwardParams{
+		AmountMinor:          amount,
+		CampaignAccountID:    campaign.AccountID,
+		DebitDescription:     "Award for payment " + paymentID,
+		Currency:             p.Currency,
+		At:                   now,
+		CashbackAccountID:    *campaign.CashbackAccountID,
+		CreditDescription:    "From " + p.MerchantName,
+		CampaignID:           campaign.ID,
+		UserID:               p.UserID,
+		PaymentTransactionID: paymentID,
+		CampaignDay:          campaign.CampaignDay,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("record campaign debit: %w", err)
-	}
-
-	// ... into the user's cash back account.
-	if _, err := q.AddToBalance(ctx, db.AddToBalanceParams{ID: cashbackAccount.ID, DeltaMinor: amount}); err != nil {
-		return nil, fmt.Errorf("credit cash back: %w", err)
-	}
-	creditID, err := q.InsertTransaction(ctx, db.InsertTransactionParams{
-		AccountID: cashbackAccount.ID, Name: "Cash back", Description: "From " + p.MerchantName,
-		Kind: "cashback", AmountMinor: amount, Currency: p.Currency, CreatedAt: now,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("record cash back credit: %w", err)
-	}
-
-	if err := q.InsertCashbackAward(ctx, db.InsertCashbackAwardParams{
-		CampaignID: campaign.ID, UserID: p.UserID, PaymentTransactionID: paymentID,
-		DebitTransactionID: debitID, CreditTransactionID: creditID,
-		AmountMinor: amount, CampaignDay: campaign.CampaignDay,
-	}); err != nil {
+		// No rows would mean the locked budget couldn't cover the award,
+		// which Award rules out; treat it like any other failure.
 		return nil, fmt.Errorf("record award: %w", err)
 	}
-
-	if budgetLeft == 0 {
-		if err := q.CloseCampaign(ctx, db.CloseCampaignParams{ID: campaign.ID, At: now}); err != nil {
-			return nil, fmt.Errorf("end campaign: %w", err)
-		}
-		result.CampaignEnded = true
-	}
+	result.CampaignEnded = award.CampaignEnded
 	return result, nil
 }
 

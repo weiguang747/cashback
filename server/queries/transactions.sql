@@ -24,6 +24,14 @@ INSERT INTO transactions (account_id, name, description, kind, amount_minor, cur
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id;
 
+-- name: InsertPayment :one
+-- Records a payment and returns it as GetTransactionByIdempotencyKey
+-- would, so Pay needn't read it back.
+INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, name, description, kind, amount_minor, currency,
+          (SELECT c.minor_unit FROM currencies c WHERE c.code = transactions.currency) AS minor_unit, created_at;
+
 -- name: GetTransactionByIdempotencyKey :one
 SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at
 FROM transactions t
