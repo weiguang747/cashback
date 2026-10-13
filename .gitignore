@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Claude generated outputs
+Claude outputs/
+
+# Go build output
+server/server
+server/bin/
+
+# env
+.env
+.env.*
+!.env.example
