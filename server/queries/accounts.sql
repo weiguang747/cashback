@@ -44,3 +44,7 @@ RETURNING balance_minor;
 
 -- name: GetAccountBalance :one
 SELECT balance_minor FROM accounts WHERE id = $1;
+
+-- name: LockAccount :one
+-- Locks an account row so money moves that touch it run one at a time.
+SELECT balance_minor FROM accounts WHERE id = $1 FOR UPDATE;

@@ -160,6 +160,47 @@ func (f fakeStore) Pay(_ context.Context, p database.PayParams) (database.PayRes
 	return database.PayResult{}, pgx.ErrNoRows
 }
 
+// Redeem mimics database.Redeem: moves cash back to main, refuses to
+// redeem more than the balance, and replays a key that already redeemed.
+func (f fakeStore) Redeem(_ context.Context, p database.RedeemParams) (database.RedeemResult, error) {
+	if f.payErr != nil {
+		return database.RedeemResult{}, f.payErr
+	}
+	accounts := f.accounts[p.UserID]
+	var main, cb *db.ListAccountsRow
+	for i := range accounts {
+		switch accounts[i].Kind {
+		case "main":
+			main = &accounts[i]
+		case "cashback":
+			cb = &accounts[i]
+		}
+	}
+	if main == nil || cb == nil {
+		return database.RedeemResult{}, database.ErrNoCashbackAccount
+	}
+	if row, ok := f.paid[p.IdempotencyKey]; ok {
+		if row.AmountMinor != p.AmountMinor {
+			return database.RedeemResult{}, database.ErrKeyReused
+		}
+		return database.RedeemResult{Transaction: row, MainBalanceMinor: main.BalanceMinor,
+			CashbackBalanceMinor: cb.BalanceMinor, MinorUnit: cb.MinorUnit, Replayed: true}, nil
+	}
+	if cb.BalanceMinor < p.AmountMinor {
+		return database.RedeemResult{}, database.ErrInsufficientFunds
+	}
+	cb.BalanceMinor -= p.AmountMinor
+	main.BalanceMinor += p.AmountMinor
+	row := db.GetTransactionByIdempotencyKeyRow{
+		ID: "redeem-" + p.IdempotencyKey, Name: "Cash back redeemed", Description: "To available balance",
+		Kind: "cashback", AmountMinor: p.AmountMinor, Currency: p.Currency, MinorUnit: cb.MinorUnit,
+		CreatedAt: time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC),
+	}
+	f.paid[p.IdempotencyKey] = row
+	return database.RedeemResult{Transaction: row, MainBalanceMinor: main.BalanceMinor,
+		CashbackBalanceMinor: cb.BalanceMinor, MinorUnit: cb.MinorUnit}, nil
+}
+
 // fakeIdem is an in-memory idempotency.Store.
 type fakeIdem struct {
 	mu      sync.Mutex

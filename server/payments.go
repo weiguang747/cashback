@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -60,10 +58,8 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 		ctx := c.Request.Context()
 		user := currentUser(c)
 
-		key := c.GetHeader("Idempotency-Key")
-		if !idempotencyKeyPattern.MatchString(key) {
-			httpx.ErrorCode(c, http.StatusBadRequest, "invalid_idempotency_key",
-				"Idempotency-Key header must be 8-128 letters, digits, - or _")
+		key, ok := idempotencyKey(c)
+		if !ok {
 			return
 		}
 
@@ -95,89 +91,44 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 			return
 		}
 
-		fp := fingerprint(req.MerchantID, req.MerchantName, req.Amount.Value, req.Amount.Currency)
-		begin, err := idem.Begin(ctx, user.ID, key, fp)
-		if err != nil {
-			// Fail closed: never pay without the duplicate guard.
-			log.Printf("idempotency begin: %v", err)
-			httpx.ErrorCode(c, http.StatusServiceUnavailable, "unavailable", "payments are unavailable right now, please try again")
-			return
-		}
-		switch begin.Outcome {
-		case idempotency.Replay:
-			c.Header("Idempotent-Replayed", "true")
-			c.Data(begin.Response.Status, gin.MIMEJSON, begin.Response.Body)
-			return
-		case idempotency.InProgress:
-			httpx.ErrorCode(c, http.StatusConflict, "payment_in_progress", "this payment is already being processed")
-			return
-		case idempotency.Mismatch:
-			httpx.ErrorCode(c, http.StatusUnprocessableEntity, "idempotency_key_reused", "this Idempotency-Key was already used for a different payment")
-			return
-		}
-
-		// From here on, record the outcome even if the client disconnects.
-		bg := context.WithoutCancel(ctx)
-
-		result, err := s.Pay(ctx, database.PayParams{
-			UserID:         user.ID,
-			AccountID:      account.ID,
-			Currency:       account.Currency,
-			AmountMinor:    amount,
-			MerchantName:   req.MerchantName,
-			IdempotencyKey: key,
-		})
-
-		var status int
-		var body any
-		switch {
-		case errors.Is(err, database.ErrInsufficientFunds):
-			status = http.StatusUnprocessableEntity
-			body = httpx.ErrorResponse{Code: "insufficient_funds", Error: "you don't have enough balance for this payment"}
-		case errors.Is(err, database.ErrKeyReused):
-			status = http.StatusUnprocessableEntity
-			body = httpx.ErrorResponse{Code: "idempotency_key_reused", Error: "this Idempotency-Key was already used for a different payment"}
-		case err != nil:
-			// Unexpected: let the client retry with the same key.
-			log.Printf("pay: %v", err)
-			if err := idem.Release(bg, user.ID, key); err != nil {
-				log.Printf("idempotency release: %v", err)
+		fp := fingerprint("payment", req.MerchantID, req.MerchantName, req.Amount.Value, req.Amount.Currency)
+		runIdempotent(c, idem, key, fp, func() (outcome, error) {
+			result, err := s.Pay(ctx, database.PayParams{
+				UserID:         user.ID,
+				AccountID:      account.ID,
+				Currency:       account.Currency,
+				AmountMinor:    amount,
+				MerchantName:   req.MerchantName,
+				IdempotencyKey: key,
+			})
+			switch {
+			case errors.Is(err, database.ErrInsufficientFunds):
+				return outcome{Status: http.StatusUnprocessableEntity, Body: httpx.ErrorResponse{
+					Code: "insufficient_funds", Error: "you don't have enough balance for this payment"}}, nil
+			case errors.Is(err, database.ErrKeyReused):
+				return keyReused, nil
+			case err != nil:
+				return outcome{}, err
 			}
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
-			return
-		default:
-			status = http.StatusCreated
+
+			m := func(minor int64) money.Money {
+				return money.Money{Minor: minor, Currency: account.Currency, Exponent: int(account.MinorUnit)}
+			}
 			txn := toTransaction(txRow(result.Transaction))
 			var cb *paymentCashback
 			if result.Cashback != nil {
-				earned := money.Money{Minor: result.Cashback.AmountMinor, Currency: account.Currency, Exponent: int(account.MinorUnit)}
+				earned := m(result.Cashback.AmountMinor)
 				cb = &paymentCashback{Amount: earned, Reason: string(result.Cashback.Reason)}
 				if result.Cashback.AmountMinor > 0 {
 					txn.Cashback = &earned
 				}
 			}
-			body = paymentResponse{Payment: payment{
+			return outcome{Status: http.StatusCreated, Replayed: result.Replayed, Body: paymentResponse{Payment: payment{
 				Transaction: txn,
-				Balance:     money.Money{Minor: result.BalanceMinor, Currency: account.Currency, Exponent: int(account.MinorUnit)},
+				Balance:     m(result.BalanceMinor),
 				Cashback:    cb,
-			}}
-		}
-
-		raw, err := json.Marshal(body)
-		if err != nil {
-			log.Printf("encode payment response: %v", err)
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
-			return
-		}
-		// A failed cache write is only logged: the database's unique key
-		// still stops a retry from charging twice.
-		if err := idem.Complete(bg, user.ID, key, fp, idempotency.Response{Status: status, Body: raw}); err != nil {
-			log.Printf("idempotency complete: %v", err)
-		}
-		if result.Replayed {
-			c.Header("Idempotent-Replayed", "true")
-		}
-		c.Data(status, gin.MIMEJSON, raw)
+			}}}, nil
+		})
 	}
 }
 

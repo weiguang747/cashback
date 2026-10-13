@@ -28,6 +28,7 @@ type store interface {
 	GetCampaignStatus(ctx context.Context, arg db.GetCampaignStatusParams) (db.GetCampaignStatusRow, error)
 	GetMainAccount(ctx context.Context, arg db.GetMainAccountParams) (db.GetMainAccountRow, error)
 	Pay(ctx context.Context, p database.PayParams) (database.PayResult, error)
+	Redeem(ctx context.Context, p database.RedeemParams) (database.RedeemResult, error)
 }
 
 // pgStore is the real store: the sqlc queries plus Pay, which needs its
@@ -41,6 +42,10 @@ func newPgStore(pool *pgxpool.Pool) pgStore { return pgStore{Queries: db.New(poo
 
 func (s pgStore) Pay(ctx context.Context, p database.PayParams) (database.PayResult, error) {
 	return database.Pay(ctx, s.pool, p)
+}
+
+func (s pgStore) Redeem(ctx context.Context, p database.RedeemParams) (database.RedeemResult, error) {
+	return database.Redeem(ctx, s.pool, p)
 }
 
 type transaction struct {

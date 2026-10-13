@@ -103,12 +103,12 @@ func TestCreatePaymentInProgress(t *testing.T) {
 	idem := newFakeIdem()
 	router := setupRouter(demoStore(0), idem)
 	// Another request with this key started and hasn't finished.
-	if _, err := idem.Begin(t.Context(), andiID, "key-00000001", fingerprint("kopi-senja", "Kopi Senja", "35000", "IDR")); err != nil {
+	if _, err := idem.Begin(t.Context(), andiID, "key-00000001", fingerprint("payment", "kopi-senja", "Kopi Senja", "35000", "IDR")); err != nil {
 		t.Fatal(err)
 	}
 	w := pay(router, andiID, "key-00000001", kopi)
-	if w.Code != http.StatusConflict || errorCode(t, w) != "payment_in_progress" {
-		t.Errorf("got %d %s, want 409 payment_in_progress", w.Code, w.Body)
+	if w.Code != http.StatusConflict || errorCode(t, w) != "in_progress" {
+		t.Errorf("got %d %s, want 409 in_progress", w.Code, w.Body)
 	}
 }
 

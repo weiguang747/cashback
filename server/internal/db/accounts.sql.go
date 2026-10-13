@@ -115,6 +115,18 @@ func (q *Queries) ListAccounts(ctx context.Context, userID string) ([]ListAccoun
 	return items, nil
 }
 
+const lockAccount = `-- name: LockAccount :one
+SELECT balance_minor FROM accounts WHERE id = $1 FOR UPDATE
+`
+
+// Locks an account row so money moves that touch it run one at a time.
+func (q *Queries) LockAccount(ctx context.Context, id string) (int64, error) {
+	row := q.db.QueryRow(ctx, lockAccount, id)
+	var balance_minor int64
+	err := row.Scan(&balance_minor)
+	return balance_minor, err
+}
+
 const reconcileAccounts = `-- name: ReconcileAccounts :many
 SELECT a.id, a.balance_minor, COALESCE(SUM(t.amount_minor), 0)::bigint AS ledger_minor
 FROM accounts a

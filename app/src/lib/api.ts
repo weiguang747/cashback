@@ -108,6 +108,24 @@ export async function createPayment(input: PaymentInput, idempotencyKey: string)
   return data.payment;
 }
 
+export type Redemption = {
+  /** The credit on the main account. */
+  transaction: Transaction;
+  /** Main account balance after redeeming. */
+  balance: Money;
+  /** Cash back left to redeem. */
+  cashbackBalance: Money;
+};
+
+/**
+ * Moves `amount` of cash back to the main balance. Like payments, reuse the
+ * idempotency key when retrying so cash back is never moved twice.
+ */
+export async function redeemCashback(amount: Money, idempotencyKey: string): Promise<Redemption> {
+  const data = await post<{ redemption: Redemption }>('/v1/cashback/redeem', { amount }, { 'Idempotency-Key': idempotencyKey });
+  return data.redemption;
+}
+
 /**
  * A failed request. `status` is 0 when the server couldn't be reached, and
  * `code` is the server's machine-readable reason, e.g. "insufficient_funds".

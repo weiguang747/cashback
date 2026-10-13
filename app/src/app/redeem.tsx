@@ -1,26 +1,62 @@
+import * as Crypto from 'expo-crypto';
 import { router } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { Amount, Button, Icon, ListRow, ResultHero, Screen, ScreenHeader, Spinner, Text } from '@/components';
-import { demo } from '@/config/demo';
 import { useAccounts } from '@/lib/accounts';
-import { addMoney, formatMoney, isZeroMoney } from '@/lib/format';
+import { ApiError, redeemCashback, type Redemption } from '@/lib/api';
+import { formatMoney, isZeroMoney } from '@/lib/format';
 import { colors, radii, spacing } from '@/theme';
 
 /** Move the full cash back balance into the available balance. */
 export default function RedeemScreen() {
   const { main, cashback, error, loading, reload } = useAccounts();
-  const [step, setStep] = useState<'form' | 'processing' | 'done'>('form');
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (timer.current) clearTimeout(timer.current);
-  }, []);
+  const [processing, setProcessing] = useState(false);
+  const [done, setDone] = useState<Redemption | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  // One Idempotency-Key per amount: retrying after an error or timeout
+  // reuses it, so cash back can never be moved twice.
+  const attempt = useRef<{ key: string; value: string } | null>(null);
 
-  const redeem = () => {
-    setStep('processing');
-    timer.current = setTimeout(() => setStep('done'), demo.processingMs - 200);
+  const redeem = async () => {
+    if (!cashback || processing) return;
+    const amount = cashback.balance;
+    if (attempt.current?.value !== amount.value) attempt.current = { key: Crypto.randomUUID(), value: amount.value };
+
+    setProcessing(true);
+    setFailure(null);
+    try {
+      setDone(await redeemCashback(amount, attempt.current.key));
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'insufficient_funds') {
+        // The balance changed since it loaded: show the new one and start over.
+        attempt.current = null;
+        setFailure('Your cash back balance has changed. Check the amount and try again.');
+        reload();
+      } else {
+        setFailure(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+      }
+    } finally {
+      setProcessing(false);
+    }
   };
+
+  if (done) {
+    const redeemed = done.transaction.amount;
+    return (
+      <Screen>
+        <ResultHero
+          status="success"
+          ringColor={colors.reward}
+          title="Cash back redeemed"
+          figure={<Amount money={redeemed} size="md" currencyColor={colors.textMuted} />}
+          message={`Added to your available balance. Your new balance is ${formatMoney(done.balance)}.`}
+        />
+        <Button label="Done" onPress={() => router.dismissTo('/home')} />
+      </Screen>
+    );
+  }
 
   if (!main || !cashback) {
     return (
@@ -44,20 +80,6 @@ export default function RedeemScreen() {
 
   const nothingToRedeem = isZeroMoney(cashback.balance);
 
-  if (step === 'done') {
-    return (
-      <Screen>
-        <ResultHero
-          status="success"
-          ringColor={colors.reward}
-          title="Cash back redeemed"
-          figure={<Amount money={cashback.balance} size="md" currencyColor={colors.textMuted} />}
-          message={`Added to your available balance. Your new balance is ${formatMoney(addMoney(main.balance, cashback.balance))}.`}
-        />
-        <Button label="Done" onPress={() => router.dismissTo('/home')} />
-      </Screen>
-    );
-  }
 
   return (
     <Screen>
@@ -104,15 +126,20 @@ export default function RedeemScreen() {
 
       <View style={styles.flex} />
 
+      {failure ? (
+        <Text variant="caption" color="danger" align="center" accessibilityRole="alert" style={styles.failure}>
+          {failure}
+        </Text>
+      ) : null}
       <Button
         label={
-          step === 'processing'
+          processing
             ? 'Redeeming…'
             : nothingToRedeem
               ? 'Nothing to redeem yet'
               : `Redeem ${formatMoney(cashback.balance)}`
         }
-        loading={step === 'processing'}
+        loading={processing}
         disabled={nothingToRedeem}
         onPress={redeem}
       />
@@ -122,6 +149,7 @@ export default function RedeemScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  failure: { marginBottom: spacing.md },
   status: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md },
   hero: {
     marginTop: spacing.xxxl,
