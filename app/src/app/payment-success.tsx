@@ -2,7 +2,6 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { Amount, Button, DetailList, ResultHero, Screen, Text } from '@/components';
-import { findMerchant } from '@/data/mock';
 import { CashbackEarnedCard } from '@/features/cashback/CashbackEarnedCard';
 import type { CashbackReason } from '@/lib/api';
 import { isZeroMoney } from '@/lib/format';
@@ -11,24 +10,23 @@ import { colors, spacing } from '@/theme';
 
 export default function PaymentSuccessScreen() {
   const {
-    amount = '0',
-    currency = 'IDR',
-    merchantId,
+    amount,
+    currency,
+    merchantName = '',
     transactionId = '',
     createdAt,
     cashbackAmount,
     cashbackReason,
   } = useLocalSearchParams<{
-    amount?: string;
-    currency?: string;
-    merchantId?: string;
+    amount: string;
+    currency: string;
+    merchantName?: string;
     transactionId?: string;
     createdAt?: string;
     /** Set when a cash back campaign was live for the payment. */
     cashbackAmount?: string;
     cashbackReason?: CashbackReason;
   }>();
-  const merchant = findMerchant(merchantId);
   const earned = cashbackAmount ? { value: cashbackAmount, currency } : null;
   const noCashbackNote = earned && isZeroMoney(earned) ? NO_CASHBACK[cashbackReason ?? 'below_minimum'] : null;
 
@@ -52,7 +50,7 @@ export default function PaymentSuccessScreen() {
         ) : null}
         <DetailList
           items={[
-            { label: 'Paid to', value: merchant.name },
+            { label: 'Paid to', value: merchantName },
             { label: 'Date', value: createdAt ? dateTimeLabel(new Date(createdAt)) : '' },
             { label: 'Paid from', value: 'Main balance' },
             { label: 'Reference', value: transactionId.slice(0, 8).toUpperCase(), numeric: true },

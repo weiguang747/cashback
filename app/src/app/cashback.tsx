@@ -8,7 +8,7 @@ import { formatMoney, isZeroMoney } from '@/lib/format';
 import { groupByDay, timeLabel } from '@/lib/transactions';
 import { colors, radii, spacing } from '@/theme';
 
-/** Cash back balance and every credit (and, later, redemption) behind it. */
+/** Cash back balance and every award and redemption behind it. */
 export default function CashbackScreen() {
   const { items, meta, error, loading, loadingMore, moreError, hasMore, reload, loadMore } = useCashbackHistory();
   const { data: campaign } = useCampaign();

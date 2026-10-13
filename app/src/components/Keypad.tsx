@@ -13,7 +13,7 @@ const labelFor = (k: KeypadKey) => (k === 'back' ? 'Delete' : k === '000' ? 'Thr
 
 type KeypadProps = { onPress: (key: KeypadKey) => void; disabled?: boolean };
 
-/** 3×4 numeric keypad for whole-rupiah amounts (no decimals; has a 000 key). */
+/** 3×4 numeric keypad for whole amounts (no decimals; has a 000 key for rupiah). */
 export function Keypad({ onPress, disabled }: KeypadProps) {
   return (
     <View style={styles.grid}>

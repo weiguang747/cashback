@@ -88,7 +88,7 @@ export default function HomeScreen() {
         {campaign?.status === 'active' ? (
           <CashbackBanner state="active" campaign={campaign} onPress={goPay} onViewHistory={goCashback} />
         ) : campaign?.status === 'ended' ? (
-          <CashbackBanner state="ended" onPress={goCashback} />
+          <CashbackBanner state="ended" campaign={campaign} onPress={goCashback} />
         ) : null}
 
         <View style={styles.section}>

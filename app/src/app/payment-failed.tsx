@@ -22,14 +22,14 @@ const copy = {
 
 export default function PaymentFailedScreen() {
   const {
-    amount = '0',
-    currency = 'IDR',
+    amount,
+    currency,
     merchantId,
     reason,
     key,
   } = useLocalSearchParams<{
-    amount?: string;
-    currency?: string;
+    amount: string;
+    currency: string;
     merchantId?: string;
     reason?: keyof typeof copy;
     /** Idempotency-Key to reuse when the outcome is unknown. */
@@ -54,7 +54,7 @@ export default function PaymentFailedScreen() {
         <Button
           label="Try again"
           style={styles.cta}
-          onPress={() => router.replace({ pathname: '/pay', params: { merchantId, amount, ...(key ? { key } : {}) } })}
+          onPress={() => router.replace({ pathname: '/pay', params: { merchantId, amount, currency, ...(key ? { key } : {}) } })}
         />
         <Button label="Back to home" variant="secondary" onPress={() => router.dismissTo('/home')} />
       </View>

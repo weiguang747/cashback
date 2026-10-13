@@ -74,7 +74,7 @@ npx expo start                                   # then i / a, or open exp://127
 | `src/lib/format.ts` | Money formatting and exact money arithmetic |
 | `src/lib/locale.ts` | Device locale, region currency, 12/24-hour setting |
 | `src/theme/` | Colours, typography, spacing, radii. Use tokens; don't hardcode values |
-| `src/data/mock.ts` | The merchant list. **Deliberately hardcoded in the app**; the server takes the merchant id and name from the payment request |
+| `src/data/merchants.ts` | The merchant list. **Deliberately hardcoded in the app**; the server takes the merchant id and name from the payment request. The seed's payment history uses the same names |
 
 ## Money in the app
 
@@ -84,7 +84,7 @@ npx expo start                                   # then i / a, or open exp://127
   - copy the fraction digits from the string, so large values stay exact
   - swap in the local symbol (`Rp`) only when the currency is the device region's own; other currencies show the code (`IDR 35,000`) or the international symbol (`US$`)
   - drop `,00` from whole rupiah amounts (IDR has 2 ISO decimals but is written without them)
-- `idr()` exists for the keypad input (whole rupiah typed by the user), which becomes `Money` before it's sent.
+- **Currency comes from the account, never a constant.** The keypad takes whole units; `wholeUnits(amount, main.balance.currency)` turns them into `Money` before sending. Result screens get the amount and currency from the server's response via route params.
 
 ## Dates and locale
 

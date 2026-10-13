@@ -15,7 +15,7 @@ type CashbackBannerProps =
       /** Opens the cash back history from the daily progress. */
       onViewHistory: () => void;
     }
-  | { state: 'ended'; onPress: () => void };
+  | { state: 'ended'; campaign: Campaign; onPress: () => void };
 
 /** Home promo for the cash back campaign: active (with daily cap) or ended. */
 export function CashbackBanner(props: CashbackBannerProps) {
@@ -23,7 +23,7 @@ export function CashbackBanner(props: CashbackBannerProps) {
     return (
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Cash back campaign has ended. Redeem your cash back"
+        accessibilityLabel={`${props.campaign.name} has ended. View your cash back`}
         onPress={props.onPress}
         style={({ pressed }) => [styles.banner, styles.ended, pressed && styles.pressed]}
       >
@@ -32,9 +32,9 @@ export function CashbackBanner(props: CashbackBannerProps) {
             <Icon name="clock" size={22} color={colors.onBrand} />
           </View>
           <View style={styles.copy}>
-            <Text variant="headline">Cash back campaign has ended</Text>
+            <Text variant="headline">{props.campaign.name} has ended</Text>
             <Text variant="caption" color="textMuted">
-              The budget is fully claimed. You can still redeem your cash back.
+              Cash back you’ve earned stays yours to redeem.
             </Text>
           </View>
           <Icon name="chevron-right" size={20} strokeWidth={2.2} />

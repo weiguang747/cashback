@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { FlatList, StyleSheet, View } from 'react-native';
 
 import { Icon, ListRow, Notice, Screen, ScreenHeader, Text, TextField, Tile } from '@/components';
-import { merchants } from '@/data/mock';
+import { merchants } from '@/data/merchants';
 import { colors, spacing } from '@/theme';
 
 /** Simulated merchants to pay. Sits between Home and Pay. */

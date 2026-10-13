@@ -1,6 +1,9 @@
 import type { Tone } from '@/theme';
 
-/** Simulated data for the demo. Amounts are whole rupiah. */
+/**
+ * The merchants the user can pay. Deliberately kept in the app: the server
+ * has no merchant table and records the id and name sent with each payment.
+ */
 
 export type Merchant = { id: string; name: string; category: string; tone: Tone };
 
@@ -15,6 +18,7 @@ export const merchants: Merchant[] = [
   { id: 'apotek-sehat', name: 'Apotek Sehat', category: 'Pharmacy', tone: 'rose' },
 ];
 
-export function findMerchant(id: string | undefined): Merchant {
-  return merchants.find((m) => m.id === id) ?? merchants[0];
+/** The merchant with this id, or undefined (e.g. a stale deep link). */
+export function findMerchant(id: string | undefined): Merchant | undefined {
+  return merchants.find((m) => m.id === id);
 }

@@ -163,7 +163,7 @@ export function isZeroMoney(m: Money): boolean {
   return !/[1-9]/.test(m.value);
 }
 
-/** Wraps a whole-rupiah amount from the mock data as Money. */
-export function idr(amount: number | string): Money {
-  return { value: String(amount || '0'), currency: 'IDR' };
+/** Wraps whole units typed on the keypad ("35000") as Money in `currency`. */
+export function wholeUnits(amount: string, currency: string): Money {
+  return { value: amount || '0', currency };
 }

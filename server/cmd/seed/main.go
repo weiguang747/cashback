@@ -25,7 +25,6 @@ var wib = time.FixedZone("WIB", 7*60*60)
 const currency = "IDR"
 
 type demoTransaction struct {
-	account               string // "main" or "cashback"
 	name, description     string
 	amountMinor           int64 // sen: rupiah × 100
 	kind                  string
@@ -36,41 +35,38 @@ type demoUser struct {
 	email, name string
 	// mainBalanceMinor is where the main account ends up. An "Opening
 	// balance" row makes up the difference from the transactions below.
-	// Cash back accounts end at the sum of their own rows.
 	mainBalanceMinor int64
-	transactions     []demoTransaction
+	// Main account history. Payments use merchants from the app's list
+	// (app/src/data/merchants.ts). There is no seeded cash back: it is only
+	// earned from a live campaign, as a double-entry award (cmd/campaign).
+	transactions []demoTransaction
 }
 
 var demoUsers = []demoUser{
 	{
 		email: "andi@example.com", name: "Andi Pratama", mainBalanceMinor: 1_245_000_000,
 		transactions: []demoTransaction{
-			{"main", "Kopi Kenangan", "Payment", -3_500_000, "out", 0, 8, 42},
-			{"main", "Sarah Wijaya", "Received", 50_000_000, "in", 0, 7, 30},
-			{"main", "Indomaret", "Payment", -24_850_000, "out", 1, 19, 15},
-			{"main", "Gojek Ride", "Payment", -4_200_000, "out", 1, 18, 2},
-			{"main", "Cash back redeemed", "To available balance", 6_400_000, "cashback", 1, 9, 10},
-			{"main", "Salary · PT Acme", "Received", 950_000_000, "in", 3, 9, 0},
-			// The redeem above moved all of Andi's cash back to main, so his
-			// cash back account ends at 0.
-			{"cashback", "Cash back earned", "From payments", 6_400_000, "cashback", 3, 12, 0},
-			{"cashback", "Cash back redeemed", "To available balance", -6_400_000, "out", 1, 9, 10},
+			{"Kopi Senja", "Payment", -3_500_000, "out", 0, 8, 42},
+			{"Sarah Wijaya", "Received", 50_000_000, "in", 0, 7, 30},
+			{"Toko Maju Jaya", "Payment", -24_850_000, "out", 1, 19, 15},
+			{"Martabak Pak Udin", "Payment", -4_200_000, "out", 1, 18, 2},
+			{"Salary · PT Acme", "Received", 950_000_000, "in", 3, 9, 0},
 		},
 	},
 	{
 		email: "sarah@example.com", name: "Sarah Wijaya", mainBalanceMinor: 320_000_000,
 		transactions: []demoTransaction{
-			{"main", "PLN Electricity", "Bill", -35_000_000, "out", 3, 8, 15},
-			{"main", "Netflix", "Subscription", -18_600_000, "out", 4, 23, 0},
-			{"main", "Tokopedia", "Payment", -12_900_000, "out", 4, 14, 40},
+			{"Apotek Sehat", "Payment", -8_500_000, "out", 3, 8, 15},
+			{"Laundry Bersih", "Payment", -6_000_000, "out", 4, 17, 0},
+			{"Pasar Segar", "Payment", -12_900_000, "out", 4, 14, 40},
 		},
 	},
 	{
 		email: "budi@example.com", name: "Budi Santoso", mainBalanceMinor: 175_000_000,
 		transactions: []demoTransaction{
-			{"main", "Andi Pratama", "Received", 7_500_000, "in", 4, 12, 5},
-			{"main", "Shell Fuel", "Payment", -20_000_000, "out", 5, 18, 20},
-			{"main", "Kopi Kenangan", "Payment", -3_500_000, "out", 5, 8, 35},
+			{"Andi Pratama", "Received", 7_500_000, "in", 4, 12, 5},
+			{"Bengkel Motor Jaya", "Payment", -20_000_000, "out", 5, 18, 20},
+			{"Kopi Senja", "Payment", -3_500_000, "out", 5, 8, 35},
 		},
 	},
 }
@@ -139,21 +135,19 @@ func seedUser(ctx context.Context, q *db.Queries, u demoUser, withTransactions b
 
 	var mainSum int64
 	for _, t := range u.transactions {
-		if t.account == "main" {
-			mainSum += t.amountMinor
-		}
+		mainSum += t.amountMinor
 	}
 	opening := u.mainBalanceMinor - mainSum
 	if opening <= 0 {
 		return 0, fmt.Errorf("main balance %d is below its transactions' total %d", u.mainBalanceMinor, mainSum)
 	}
-	rows := append([]demoTransaction{{"main", "Opening balance", "Top up", opening, "in", 30, 9, 0}}, u.transactions...)
+	rows := append([]demoTransaction{{"Opening balance", "Top up", opening, "in", 30, 9, 0}}, u.transactions...)
 
 	today := time.Now().In(wib)
 	for _, t := range rows {
 		day := today.AddDate(0, 0, -t.daysAgo)
 		if _, err := q.InsertTransaction(ctx, db.InsertTransactionParams{
-			AccountID:   accounts[t.account],
+			AccountID:   accounts["main"],
 			Name:        t.name,
 			Description: t.description,
 			Kind:        t.kind,

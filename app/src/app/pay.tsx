@@ -1,22 +1,25 @@
 import * as Crypto from 'expo-crypto';
-import { router, useLocalSearchParams } from 'expo-router';
+import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { Amount, Button, Keypad, Pill, Screen, ScreenHeader, Text, Tile, applyKey } from '@/components';
-import { findMerchant } from '@/data/mock';
+import { findMerchant } from '@/data/merchants';
 import { useAccounts } from '@/lib/accounts';
 import { ApiError, createPayment } from '@/lib/api';
-import { compareMoney, formatMoney, idr } from '@/lib/format';
+import { compareMoney, formatMoney, wholeUnits } from '@/lib/format';
 import { colors, radii, spacing, type AmountSize } from '@/theme';
 
 /** Enter an amount and pay the chosen merchant from the main balance. */
 export default function PayScreen() {
   // `key` comes back from the failure screen so "Try again" retries the
   // same payment instead of starting a new one.
-  const params = useLocalSearchParams<{ merchantId?: string; amount?: string; key?: string }>();
+  const params = useLocalSearchParams<{ merchantId?: string; amount?: string; currency?: string; key?: string }>();
   const merchant = findMerchant(params.merchantId);
   const { main, error } = useAccounts();
+  // Pay in the main account's currency. A retry from the failure screen
+  // already knows it, so the amount shows before the balance loads.
+  const currency = main?.balance.currency ?? params.currency;
 
   const [amount, setAmount] = useState(params.amount ?? '');
   const [processing, setProcessing] = useState(false);
@@ -24,20 +27,21 @@ export default function PayScreen() {
   // a retry after a timeout can never charge twice; a new amount gets a new key.
   const attempt = useRef(params.key && params.amount ? { key: params.key, amount: params.amount } : null);
 
-  const value = Number(amount || '0');
-  const empty = value === 0;
+  const empty = Number(amount || '0') === 0;
+  const money = currency ? wholeUnits(amount, currency) : null;
   // Only a hint for the user; the server enforces the real check.
-  const overBalance = main ? compareMoney(idr(amount), main.balance) > 0 : false;
+  const overBalance = main && money ? compareMoney(money, main.balance) > 0 : false;
   const blocked = empty || overBalance || !main;
 
   const size: AmountSize = amount.length > 9 ? 'sm' : amount.length > 6 ? 'lg' : 'xl';
   const figureColor = empty ? colors.textPlaceholder : overBalance ? colors.danger : colors.text;
 
+  if (!merchant) return <Redirect href="/merchants" />;
+
   const pay = async () => {
-    if (blocked || processing) return;
+    if (blocked || processing || !money) return;
     if (attempt.current?.amount !== amount) attempt.current = { key: Crypto.randomUUID(), amount };
     const { key } = attempt.current;
-    const money = idr(amount);
 
     setProcessing(true);
     try {
@@ -48,9 +52,10 @@ export default function PayScreen() {
       router.replace({
         pathname: '/payment-success',
         params: {
-          merchantId: merchant.id,
-          amount: money.value,
-          currency: money.currency,
+          merchantName: transaction.name,
+          // The server's record of the payment; it's money out, so drop the sign.
+          amount: transaction.amount.value.replace(/^-/, ''),
+          currency: transaction.amount.currency,
           transactionId: transaction.id,
           createdAt: transaction.createdAt,
           ...(cashback ? { cashbackAmount: cashback.amount.value, cashbackReason: cashback.reason } : {}),
@@ -90,7 +95,7 @@ export default function PayScreen() {
           Enter amount
         </Text>
         <View accessibilityLiveRegion="polite">
-          <Amount money={idr(amount)} size={size} color={figureColor} />
+          {money ? <Amount money={money} size={size} color={figureColor} /> : null}
         </View>
         {!main ? (
           <Pill tone={error ? 'danger' : undefined}>{error ? `Couldn’t load your balance. ${error}` : 'Loading balance…'}</Pill>
@@ -106,7 +111,7 @@ export default function PayScreen() {
       <Keypad disabled={processing} onPress={(k) => setAmount((a) => applyKey(a, k))} />
 
       <Button
-        label={processing ? 'Processing…' : `Pay ${formatMoney(idr(amount))}`}
+        label={processing ? 'Processing…' : money ? `Pay ${formatMoney(money)}` : 'Pay'}
         loading={processing}
         disabled={blocked}
         onPress={pay}

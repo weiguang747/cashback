@@ -86,7 +86,7 @@ Main account activity. `kind` is `in`, `out` or `cashback` (a redemption credit)
 {
   "transactions": [
     {
-      "id": "…", "name": "Kopi Kenangan", "description": "Payment", "kind": "out",
+      "id": "…", "name": "Kopi Senja", "description": "Payment", "kind": "out",
       "amount": { "value": "-35000.00", "currency": "IDR" },
       "cashback": { "value": "1750.00", "currency": "IDR" },
       "createdAt": "2026-10-13T01:42:00Z"
@@ -104,12 +104,12 @@ Headers: `X-User-ID`, `Idempotency-Key`.
 
 ```json
 // request
-{ "merchantId": "kopi-kenangan", "merchantName": "Kopi Kenangan",
+{ "merchantId": "kopi-senja", "merchantName": "Kopi Senja",
   "amount": { "value": "35000", "currency": "IDR" } }
 // 201
 {
   "payment": {
-    "transaction": { "id": "…", "name": "Kopi Kenangan", "kind": "out",
+    "transaction": { "id": "…", "name": "Kopi Senja", "kind": "out",
                      "amount": { "value": "-35000.00", "currency": "IDR" },
                      "cashback": { "value": "1750.00", "currency": "IDR" }, "…": "…" },
     "balance":  { "value": "12415000.00", "currency": "IDR" },
@@ -163,7 +163,7 @@ Paged like `/v1/transactions`; `balance` is on every page.
 {
   "balance": { "value": "3250.00", "currency": "IDR" },
   "transactions": [
-    { "id": "…", "name": "Cash back", "description": "From Kopi Kenangan", "kind": "cashback",
+    { "id": "…", "name": "Cash back", "description": "From Kopi Senja", "kind": "cashback",
       "amount": { "value": "1750.00", "currency": "IDR" }, "createdAt": "…" },
     { "id": "…", "name": "Cash back redeemed", "description": "To available balance", "kind": "out",
       "amount": { "value": "-5000.00", "currency": "IDR" }, "createdAt": "…" }
