@@ -1,15 +1,19 @@
 import { router } from 'expo-router';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
-import { Button, EmptyState, Screen, SectionHeader, Text, Tile, TransactionRow } from '@/components';
+import { Button, EmptyState, Screen, SectionHeader, Spinner, Text, Tile, TransactionRow } from '@/components';
 import { demo } from '@/config/demo';
-import { account, recentTransactions } from '@/data/mock';
+import { account } from '@/data/mock';
 import { CashbackBanner } from '@/features/cashback/CashbackBanner';
 import { BalanceCard } from '@/features/wallet/BalanceCard';
+import { dayLabel, timeLabel, useTransactions } from '@/lib/transactions';
 import { colors, radii, spacing } from '@/theme';
 
+/** How many transactions Home shows before "See all". */
+const RECENT_COUNT = 6;
+
 export default function HomeScreen() {
-  const transactions = demo.hasTransactions ? recentTransactions : [];
+  const { data: transactions, error, loading, reload } = useTransactions(RECENT_COUNT);
   const goPay = () => router.push('/merchants');
   const goRedeem = () => router.push('/redeem');
 
@@ -64,11 +68,27 @@ export default function HomeScreen() {
         <View style={styles.section}>
           <SectionHeader
             title="Transactions"
-            actionLabel={transactions.length ? 'See all' : undefined}
+            actionLabel={transactions?.length ? 'See all' : undefined}
             onAction={() => router.push('/transactions')}
           />
-          {transactions.length ? (
-            transactions.map((t) => <TransactionRow key={t.id} transaction={t} />)
+          {transactions === null ? (
+            error ? (
+              <View style={styles.status}>
+                <Text variant="bodySmall" color="textMuted" align="center">
+                  {error}
+                </Text>
+                <Button label="Try again" variant="secondary" size="sm" block={false} onPress={reload} loading={loading} style={styles.retry} />
+              </View>
+            ) : (
+              <View style={styles.status} accessibilityLabel="Loading transactions">
+                <Spinner color={colors.textMuted} />
+              </View>
+            )
+          ) : transactions.length ? (
+            transactions.map((t) => {
+              const date = new Date(t.createdAt);
+              return <TransactionRow key={t.id} transaction={t} subtitle={`${dayLabel(date)} · ${timeLabel(date)}`} />;
+            })
           ) : (
             <EmptyState
               icon="receipt"
@@ -91,4 +111,6 @@ const styles = StyleSheet.create({
   greeting: { gap: spacing.xxs },
   logout: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: radii.pill },
   section: { marginTop: spacing.sm, minHeight: 280 },
+  status: { alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xxxl },
+  retry: { alignSelf: 'center' },
 });

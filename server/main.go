@@ -26,5 +26,6 @@ func setupRouter() *gin.Engine {
 		c.String(http.StatusOK, "ok")
 	})
 	router.POST("/auth/sign-in", signIn)
+	router.GET("/transactions", listTransactions)
 	return router
 }

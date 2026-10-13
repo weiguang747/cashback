@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
-import { ScrollView, SectionList, StyleSheet, View } from 'react-native';
+import { RefreshControl, ScrollView, SectionList, StyleSheet, View } from 'react-native';
 
-import { Chip, Screen, ScreenHeader, Text, TextField, TransactionRow } from '@/components';
-import { transactionGroups, type TransactionKind } from '@/data/mock';
-import { spacing } from '@/theme';
+import { Button, Chip, Screen, ScreenHeader, Spinner, Text, TextField, TransactionRow } from '@/components';
+import type { TransactionKind } from '@/lib/api';
+import { groupByDay, timeLabel, useTransactions } from '@/lib/transactions';
+import { colors, spacing } from '@/theme';
 
 type Filter = 'all' | TransactionKind;
 
@@ -18,18 +19,17 @@ const FILTERS: { id: Filter; label: string }[] = [
 export default function TransactionsScreen() {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
+  const { data, error, loading, reload } = useTransactions();
 
   const sections = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return transactionGroups
-      .map((g) => ({
-        title: g.label,
-        data: g.items.filter(
-          (t) => (filter === 'all' || t.kind === filter) && (!q || t.name.toLowerCase().includes(q)),
-        ),
-      }))
-      .filter((s) => s.data.length > 0);
-  }, [filter, query]);
+    const matches = (data ?? []).filter(
+      (t) => (filter === 'all' || t.kind === filter) && (!q || t.name.toLowerCase().includes(q)),
+    );
+    return groupByDay(matches);
+  }, [data, filter, query]);
+
+  const filtered = filter !== 'all' || query.trim() !== '';
 
   return (
     <Screen>
@@ -62,11 +62,36 @@ export default function TransactionsScreen() {
             {section.title}
           </Text>
         )}
-        renderItem={({ item }) => <TransactionRow transaction={item} />}
+        renderItem={({ item }) => (
+          <TransactionRow transaction={item} subtitle={`${timeLabel(new Date(item.createdAt))} · ${item.description}`} />
+        )}
+        refreshControl={<RefreshControl refreshing={loading && data !== null} onRefresh={reload} />}
+        ListHeaderComponent={
+          error && data ? (
+            <Text variant="caption" color="danger" accessibilityRole="alert" style={styles.refreshError}>
+              Couldn't refresh. {error}
+            </Text>
+          ) : null
+        }
         ListEmptyComponent={
-          <Text variant="bodySmall" color="textMuted" align="center" style={styles.empty}>
-            No transactions found.
-          </Text>
+          data === null ? (
+            error ? (
+              <View style={styles.status}>
+                <Text variant="bodySmall" color="textMuted" align="center">
+                  {error}
+                </Text>
+                <Button label="Try again" variant="secondary" size="sm" block={false} onPress={reload} loading={loading} style={styles.retry} />
+              </View>
+            ) : (
+              <View style={styles.status} accessibilityLabel="Loading transactions">
+                <Spinner color={colors.textMuted} />
+              </View>
+            )
+          ) : (
+            <Text variant="bodySmall" color="textMuted" align="center" style={styles.status}>
+              {filtered ? 'No transactions match your search or filter.' : 'No transactions yet.'}
+            </Text>
+          )
         }
       />
     </Screen>
@@ -78,5 +103,7 @@ const styles = StyleSheet.create({
   chips: { gap: spacing.sm },
   list: { paddingBottom: spacing.xxxl },
   sectionHeader: { marginTop: spacing.xl, marginBottom: spacing.xs },
-  empty: { paddingVertical: spacing.xxxl },
+  status: { alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xxxl },
+  retry: { alignSelf: 'center' },
+  refreshError: { marginTop: spacing.md },
 });

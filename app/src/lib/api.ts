@@ -12,15 +12,41 @@ export function signIn(email: string): Promise<SignInResponse> {
   return post<SignInResponse>('/auth/sign-in', { email });
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+export type TransactionKind = 'in' | 'out' | 'cashback';
+
+export type Transaction = {
+  id: string;
+  name: string;
+  /** e.g. "Payment", "Received", "Bill" */
+  description: string;
+  /** Whole rupiah. Negative for money out. */
+  amount: number;
+  kind: TransactionKind;
+  /** ISO 8601 timestamp. */
+  createdAt: string;
+};
+
+/** Transactions, newest first. Pass `limit` to get only the most recent ones. */
+export async function getTransactions(opts: { limit?: number; signal?: AbortSignal } = {}): Promise<Transaction[]> {
+  const query = opts.limit ? `?limit=${opts.limit}` : '';
+  const data = await request<{ transactions: Transaction[] }>(`/transactions${query}`, { signal: opts.signal });
+  return data.transactions;
+}
+
+function post<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch {
+    res = await fetch(`${API_URL}${path}`, init);
+  } catch (e) {
+    if (e instanceof Error && e.name === 'AbortError') throw e;
     throw new Error("Can't reach the server. Check your connection and try again.");
   }
 

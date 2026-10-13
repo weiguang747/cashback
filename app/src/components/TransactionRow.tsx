@@ -1,4 +1,4 @@
-import type { Transaction } from '@/data/mock';
+import type { Transaction } from '@/lib/api';
 import { formatIDR } from '@/lib/format';
 import { colors, type Tone } from '@/theme';
 
@@ -12,13 +12,20 @@ const kindStyle: Record<Transaction['kind'], { tone: Tone; amountColor: string }
   cashback: { tone: 'reward', amountColor: colors.onRewardMuted },
 };
 
-export function TransactionRow({ transaction, divider }: { transaction: Transaction; divider?: boolean }) {
+type TransactionRowProps = {
+  transaction: Transaction;
+  /** e.g. "8:42 AM · Payment" */
+  subtitle: string;
+  divider?: boolean;
+};
+
+export function TransactionRow({ transaction, subtitle, divider }: TransactionRowProps) {
   const k = kindStyle[transaction.kind];
   return (
     <ListRow
       leading={<Tile tone={k.tone} label={transaction.name} />}
       title={transaction.name}
-      subtitle={transaction.meta}
+      subtitle={subtitle}
       divider={divider}
       trailing={
         <Text variant="numeric" style={{ color: k.amountColor }}>

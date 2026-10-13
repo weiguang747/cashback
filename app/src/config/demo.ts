@@ -12,7 +12,4 @@ export const demo = {
   cashbackRate: 0.05,
   dailyCap: 25000,
   earnedToday: 18000,
-
-  /** Set to false to see the Home empty state. */
-  hasTransactions: true,
 };
