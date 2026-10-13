@@ -5,9 +5,4 @@
 export const demo = {
   /** Delay before a simulated redemption resolves. */
   processingMs: 1600,
-
-  campaign: 'active' as 'active' | 'ended',
-  cashbackRate: 0.05,
-  dailyCap: 25000,
-  earnedToday: 18000,
 };

@@ -3,10 +3,10 @@ import { useCallback, useRef } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button, EmptyState, Screen, SectionHeader, Spinner, Text, Tile, TransactionRow } from '@/components';
-import { demo } from '@/config/demo';
 import { CashbackBanner } from '@/features/cashback/CashbackBanner';
 import { BalanceCard } from '@/features/wallet/BalanceCard';
 import { useAccounts } from '@/lib/accounts';
+import { useCampaign } from '@/lib/cashback';
 import { clearUser, useUser } from '@/lib/session';
 import { dayLabel, timeLabel, useTransactions } from '@/lib/transactions';
 import { colors, radii, spacing } from '@/theme';
@@ -17,6 +17,7 @@ const RECENT_COUNT = 6;
 export default function HomeScreen() {
   const user = useUser();
   const accounts = useAccounts();
+  const { data: campaign, reload: reloadCampaign } = useCampaign();
   const { data: transactions, error, loading, reload } = useTransactions(RECENT_COUNT);
 
   // Refresh when coming back to Home (e.g. after paying). The first focus is
@@ -30,8 +31,9 @@ export default function HomeScreen() {
         return;
       }
       reloadAccounts();
+      reloadCampaign();
       reload();
-    }, [reloadAccounts, reload]),
+    }, [reloadAccounts, reloadCampaign, reload]),
   );
   const name = user?.name ?? '';
   const initials = name
@@ -42,6 +44,7 @@ export default function HomeScreen() {
     .toUpperCase();
   const goPay = () => router.push('/merchants');
   const goRedeem = () => router.push('/redeem');
+  const goCashback = () => router.push('/cashback');
 
   return (
     <Screen padded={false}>
@@ -77,20 +80,15 @@ export default function HomeScreen() {
           error={accounts.error}
           onRetry={accounts.reload}
           onRedeem={goRedeem}
+          onViewCashback={goCashback}
           onPay={goPay}
         />
 
-        {demo.campaign === 'active' ? (
-          <CashbackBanner
-            state="active"
-            ratePercent={Math.round(demo.cashbackRate * 100)}
-            earnedToday={demo.earnedToday}
-            dailyCap={demo.dailyCap}
-            onPress={goPay}
-          />
-        ) : (
-          <CashbackBanner state="ended" onPress={goRedeem} />
-        )}
+        {campaign?.status === 'active' ? (
+          <CashbackBanner state="active" campaign={campaign} onPress={goPay} onViewHistory={goCashback} />
+        ) : campaign?.status === 'ended' ? (
+          <CashbackBanner state="ended" onPress={goCashback} />
+        ) : null}
 
         <View style={styles.section}>
           <SectionHeader

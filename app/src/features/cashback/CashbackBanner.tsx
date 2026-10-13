@@ -1,16 +1,19 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Icon, ProgressBar, Text } from '@/components';
-import { formatMoney, idr } from '@/lib/format';
+import type { Campaign } from '@/lib/api';
+import { ratePercent } from '@/lib/cashback';
+import { compareMoney, formatMoney, isZeroMoney, subtractMoney } from '@/lib/format';
+import { timeLabel } from '@/lib/transactions';
 import { colors, fonts, radii, spacing } from '@/theme';
 
 type CashbackBannerProps =
   | {
       state: 'active';
-      ratePercent: number;
-      earnedToday: number;
-      dailyCap: number;
+      campaign: Campaign;
       onPress: () => void;
+      /** Opens the cash back history from the daily progress. */
+      onViewHistory: () => void;
     }
   | { state: 'ended'; onPress: () => void };
 
@@ -40,60 +43,65 @@ export function CashbackBanner(props: CashbackBannerProps) {
     );
   }
 
-  const { ratePercent, earnedToday, dailyCap, onPress } = props;
-  const earned = Math.min(earnedToday, dailyCap);
-  const capReached = earned >= dailyCap;
+  const { campaign, onPress, onViewHistory } = props;
+  const rate = ratePercent(campaign.rateBps);
+  const { earnedToday, dailyCap, minSpend } = campaign;
+  const capReached = compareMoney(earnedToday, dailyCap) >= 0;
+  const leftToday = formatMoney(capReached ? dailyCap : subtractMoney(dailyCap, earnedToday));
+  // Display only, so a float ratio is fine here.
+  const progress = Math.min(Number(earnedToday.value) / Number(dailyCap.value), 1);
+  const condition = isZeroMoney(minSpend) ? 'On every payment.' : `On payments of ${formatMoney(minSpend)} or more.`;
 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Get ${ratePercent}% cash back on every successful payment`}
+      accessibilityLabel={`Get ${rate} cash back. ${condition}`}
       onPress={onPress}
       style={({ pressed }) => [styles.banner, styles.active, pressed && styles.pressed]}
     >
       <View style={styles.row}>
         <View style={[styles.badge, { backgroundColor: colors.onReward }]}>
-          <Text style={styles.rate}>{ratePercent}%</Text>
+          <Text style={styles.rate}>{rate}</Text>
         </View>
         <View style={styles.copy}>
           <Text variant="headline" color="onReward">
-            Get {ratePercent}% cash back
+            Get {rate} cash back
           </Text>
           <Text variant="caption" color="onRewardMuted">
-            On every successful payment. Redeem it anytime.
+            {condition}
           </Text>
         </View>
         <Icon name="chevron-right" size={20} color={colors.onReward} strokeWidth={2.2} />
       </View>
 
-      <View style={styles.cap}>
+      <Pressable accessibilityRole="button" accessibilityLabel="View cash back history" onPress={onViewHistory} style={styles.cap}>
         <View style={styles.capLabels}>
           <Text variant="micro" color="onRewardMuted">
             Today’s cash back
           </Text>
           <Text variant="micro" color="onRewardMuted">
             <Text variant="numericSmall" color="onReward">
-              {formatMoney(idr(earned))}
+              {formatMoney(earnedToday)}
             </Text>{' '}
-            / {formatMoney(idr(dailyCap))} daily cap
+            / {formatMoney(dailyCap)} daily cap
           </Text>
         </View>
         <ProgressBar
-          progress={earned / dailyCap}
+          progress={progress}
           trackColor={colors.rewardTrack}
           fillColor={colors.onReward}
           accessibilityLabel="Daily cash back cap used"
         />
         {capReached ? (
           <Text variant="microStrong" color="onReward">
-            Daily cap reached · earn again tomorrow
+            Daily cap reached · earn again from {timeLabel(new Date(campaign.resetAt))}
           </Text>
         ) : (
           <Text variant="micro" color="onRewardMuted">
-            {formatMoney(idr(dailyCap - earned))} left to earn today
+            {leftToday} left to earn today
           </Text>
         )}
-      </View>
+      </Pressable>
     </Pressable>
   );
 }

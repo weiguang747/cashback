@@ -83,11 +83,13 @@ func (q *Queries) InsertTransaction(ctx context.Context, arg InsertTransactionPa
 }
 
 const listTransactions = `-- name: ListTransactions :many
-SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at
+SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at,
+       ca.amount_minor AS cashback_minor
 FROM transactions t
 JOIN accounts a ON a.id = t.account_id
 JOIN currencies c ON c.code = t.currency
-WHERE a.user_id = $1 AND a.kind = 'main'
+LEFT JOIN cashback_awards ca ON ca.payment_transaction_id = t.id
+WHERE a.user_id = $1::uuid AND a.kind = 'main'
 ORDER BY t.created_at DESC, t.id DESC
 LIMIT $2
 `
@@ -98,17 +100,19 @@ type ListTransactionsParams struct {
 }
 
 type ListTransactionsRow struct {
-	ID          string
-	Name        string
-	Description string
-	Kind        string
-	AmountMinor int64
-	Currency    string
-	MinorUnit   int16
-	CreatedAt   time.Time
+	ID            string
+	Name          string
+	Description   string
+	Kind          string
+	AmountMinor   int64
+	Currency      string
+	MinorUnit     int16
+	CreatedAt     time.Time
+	CashbackMinor *int64
 }
 
-// A user's main-account activity, newest first. A NULL limit returns every row.
+// A user's main-account activity, newest first, with the cash back each
+// payment earned (NULL if none). A NULL limit returns every row.
 func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listTransactions, arg.UserID, arg.Limit)
 	if err != nil {
@@ -127,6 +131,7 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 			&i.Currency,
 			&i.MinorUnit,
 			&i.CreatedAt,
+			&i.CashbackMinor,
 		); err != nil {
 			return nil, err
 		}

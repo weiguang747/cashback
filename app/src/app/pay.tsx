@@ -41,7 +41,10 @@ export default function PayScreen() {
 
     setProcessing(true);
     try {
-      const { transaction } = await createPayment({ merchantId: merchant.id, merchantName: merchant.name, amount: money }, key);
+      const { transaction, cashback } = await createPayment(
+        { merchantId: merchant.id, merchantName: merchant.name, amount: money },
+        key,
+      );
       router.replace({
         pathname: '/payment-success',
         params: {
@@ -50,6 +53,7 @@ export default function PayScreen() {
           currency: money.currency,
           transactionId: transaction.id,
           createdAt: transaction.createdAt,
+          ...(cashback ? { cashbackAmount: cashback.amount.value, cashbackReason: cashback.reason } : {}),
         },
       });
     } catch (e) {

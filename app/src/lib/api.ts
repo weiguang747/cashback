@@ -36,6 +36,8 @@ export type Transaction = {
   kind: TransactionKind;
   /** ISO 8601 timestamp in UTC; show it in the device's time zone. */
   createdAt: string;
+  /** Cash back this payment earned, if any. */
+  cashback?: Money;
 };
 
 /** Transactions, newest first. Pass `limit` to get only the most recent ones. */
@@ -58,11 +60,43 @@ export async function getAccounts(opts: { signal?: AbortSignal } = {}): Promise<
 }
 
 export type PaymentInput = { merchantId: string; merchantName: string; amount: Money };
+export type CashbackReason = 'awarded' | 'below_minimum' | 'daily_cap_reached' | 'budget_exhausted';
+
 export type Payment = {
   transaction: Transaction;
   /** Main account balance after the payment. */
   balance: Money;
+  /** Null when no cash back campaign was live. */
+  cashback: { amount: Money; reason: CashbackReason } | null;
 };
+
+export type Campaign = {
+  id: string;
+  name: string;
+  status: 'active' | 'ended';
+  /** 500 = 5%. */
+  rateBps: number;
+  minSpend: Money;
+  dailyCap: Money;
+  /** What the signed-in user has earned today, against dailyCap. */
+  earnedToday: Money;
+  budgetRemaining: Money;
+  /** When the daily cap resets (ISO 8601, UTC). */
+  resetAt: string;
+};
+
+/** The live cash back campaign, the latest ended one, or null if there's never been one. */
+export async function getCampaign(opts: { signal?: AbortSignal } = {}): Promise<Campaign | null> {
+  const data = await request<{ campaign: Campaign | null }>('/v1/cashback/campaign', { signal: opts.signal });
+  return data.campaign;
+}
+
+export type CashbackHistory = { balance: Money; transactions: Transaction[] };
+
+/** The cash back balance and its activity, newest first. */
+export function getCashbackHistory(opts: { signal?: AbortSignal } = {}): Promise<CashbackHistory> {
+  return request<CashbackHistory>('/v1/cashback/history', { signal: opts.signal });
+}
 
 /**
  * Pays a merchant from the main account. `idempotencyKey` must be a fresh

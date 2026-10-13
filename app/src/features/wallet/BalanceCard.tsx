@@ -13,11 +13,13 @@ type BalanceCardProps = {
   error?: string | null;
   onRetry?: () => void;
   onRedeem: () => void;
+  /** Opens the cash back history. */
+  onViewCashback: () => void;
   onPay: () => void;
 };
 
 /** Dark hero card on Home: available balance, cash back row and Pay. */
-export function BalanceCard({ balance, cashback, error, onRetry, onRedeem, onPay }: BalanceCardProps) {
+export function BalanceCard({ balance, cashback, error, onRetry, onRedeem, onViewCashback, onPay }: BalanceCardProps) {
   return (
     <View style={styles.card}>
       <View style={styles.top}>
@@ -52,8 +54,8 @@ export function BalanceCard({ balance, cashback, error, onRetry, onRedeem, onPay
 
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={cashback ? `Cash back ${formatMoney(cashback)}. Redeem` : 'Cash back. Redeem'}
-        onPress={onRedeem}
+        accessibilityLabel={cashback ? `Cash back ${formatMoney(cashback)}. View history` : 'Cash back. View history'}
+        onPress={onViewCashback}
         style={({ pressed }) => [styles.cashback, pressed && styles.cashbackPressed]}
       >
         <View style={styles.cashbackIcon}>
@@ -67,12 +69,18 @@ export function BalanceCard({ balance, cashback, error, onRetry, onRedeem, onPay
             {cashback ? formatMoney(cashback) : '–'}
           </Text>
         </View>
-        <View style={styles.redeem}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Redeem cash back"
+          onPress={onRedeem}
+          hitSlop={spacing.sm}
+          style={({ pressed }) => [styles.redeem, pressed && styles.redeemPressed]}
+        >
           <Text variant="label" color="reward">
             Redeem
           </Text>
           <Icon name="chevron-right" size={16} color={colors.reward} strokeWidth={2.2} />
-        </View>
+        </Pressable>
       </Pressable>
 
       <Button label="Pay" icon="arrow-up-right" variant="inverse" size="md" onPress={onPay} />
@@ -119,4 +127,5 @@ const styles = StyleSheet.create({
   },
   cashbackText: { flex: 1, gap: 1 },
   redeem: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  redeemPressed: { opacity: 0.6 },
 });

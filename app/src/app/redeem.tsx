@@ -72,7 +72,10 @@ export default function RedeemScreen() {
         </Text>
         <Amount money={cashback.balance} size="md" color={colors.onReward} />
         <Text variant="caption" color="onRewardMuted">
-          Earned from {Math.round(demo.cashbackRate * 100)}% cash back on your payments
+          Earned from cash back campaigns
+        </Text>
+        <Text variant="label" color="onReward" accessibilityRole="link" onPress={() => router.push('/cashback')}>
+          View cash back history
         </Text>
       </View>
 

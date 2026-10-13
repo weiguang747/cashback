@@ -50,6 +50,7 @@ export default function RootLayout() {
           <Stack.Screen name="payment-failed" options={{ gestureEnabled: false }} />
           <Stack.Screen name="redeem" />
           <Stack.Screen name="transactions" />
+          <Stack.Screen name="cashback" />
         </Stack.Protected>
       </Stack>
     </>

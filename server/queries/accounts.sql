@@ -3,12 +3,12 @@
 SELECT a.id, a.kind, a.currency, c.minor_unit, a.balance_minor
 FROM accounts a
 JOIN currencies c ON c.code = a.currency
-WHERE a.user_id = $1
+WHERE a.user_id = sqlc.arg('user_id')::uuid
 ORDER BY a.kind = 'main' DESC, a.currency;
 
 -- name: UpsertAccount :one
 INSERT INTO accounts (user_id, kind, currency)
-VALUES ($1, $2, $3)
+VALUES (sqlc.arg('user_id')::uuid, sqlc.arg('kind'), sqlc.arg('currency'))
 ON CONFLICT (user_id, kind, currency) DO UPDATE SET kind = EXCLUDED.kind
 RETURNING id;
 
@@ -32,7 +32,7 @@ HAVING a.balance_minor <> COALESCE(SUM(t.amount_minor), 0);
 SELECT a.id, a.currency, c.minor_unit, a.balance_minor
 FROM accounts a
 JOIN currencies c ON c.code = a.currency
-WHERE a.user_id = $1 AND a.kind = 'main' AND a.currency = $2;
+WHERE a.user_id = sqlc.arg('user_id')::uuid AND a.kind = 'main' AND a.currency = sqlc.arg('currency');
 
 -- name: DebitAccount :one
 -- The overdraft guard. Matches no row when the balance is too low, and the

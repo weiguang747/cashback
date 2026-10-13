@@ -33,6 +33,14 @@ type paymentRequest struct {
 type payment struct {
 	Transaction transaction `json:"transaction"`
 	Balance     money.Money `json:"balance"` // main account balance after paying
+	// Null when no campaign was live; otherwise what was earned and why.
+	Cashback *paymentCashback `json:"cashback"`
+}
+
+type paymentCashback struct {
+	Amount money.Money `json:"amount"`
+	// "awarded", "below_minimum", "daily_cap_reached" or "budget_exhausted".
+	Reason string `json:"reason"`
 }
 
 type paymentResponse struct {
@@ -112,6 +120,7 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 		bg := context.WithoutCancel(ctx)
 
 		result, err := s.Pay(ctx, database.PayParams{
+			UserID:         user.ID,
 			AccountID:      account.ID,
 			Currency:       account.Currency,
 			AmountMinor:    amount,
@@ -138,9 +147,19 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 			return
 		default:
 			status = http.StatusCreated
+			txn := toTransaction(txRow(result.Transaction))
+			var cb *paymentCashback
+			if result.Cashback != nil {
+				earned := money.Money{Minor: result.Cashback.AmountMinor, Currency: account.Currency, Exponent: int(account.MinorUnit)}
+				cb = &paymentCashback{Amount: earned, Reason: string(result.Cashback.Reason)}
+				if result.Cashback.AmountMinor > 0 {
+					txn.Cashback = &earned
+				}
+			}
 			body = paymentResponse{Payment: payment{
-				Transaction: toTransaction(db.ListTransactionsRow(result.Transaction)),
+				Transaction: txn,
 				Balance:     money.Money{Minor: result.BalanceMinor, Currency: account.Currency, Exponent: int(account.MinorUnit)},
+				Cashback:    cb,
 			}}
 		}
 

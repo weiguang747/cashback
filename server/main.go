@@ -78,6 +78,8 @@ func setupRouter(s store, idem idempotency.Store) *gin.Engine {
 	signedIn.GET("/accounts", listAccounts(s))
 	signedIn.GET("/transactions", listTransactions(s))
 	signedIn.POST("/payments", createPayment(s, idem))
+	signedIn.GET("/cashback/campaign", getCampaign(s))
+	signedIn.GET("/cashback/history", listCashbackHistory(s))
 
 	return router
 }

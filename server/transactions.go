@@ -23,6 +23,9 @@ type store interface {
 	GetUserByEmail(ctx context.Context, email string) (db.GetUserByEmailRow, error)
 	ListAccounts(ctx context.Context, userID string) ([]db.ListAccountsRow, error)
 	ListTransactions(ctx context.Context, arg db.ListTransactionsParams) ([]db.ListTransactionsRow, error)
+	ListCashbackTransactions(ctx context.Context, arg db.ListCashbackTransactionsParams) ([]db.ListCashbackTransactionsRow, error)
+	GetUserAccount(ctx context.Context, arg db.GetUserAccountParams) (db.GetUserAccountRow, error)
+	GetCampaignStatus(ctx context.Context, arg db.GetCampaignStatusParams) (db.GetCampaignStatusRow, error)
 	GetMainAccount(ctx context.Context, arg db.GetMainAccountParams) (db.GetMainAccountRow, error)
 	Pay(ctx context.Context, p database.PayParams) (database.PayResult, error)
 }
@@ -47,6 +50,8 @@ type transaction struct {
 	Amount      money.Money `json:"amount"` // {"value":"-35000.00","currency":"IDR"}; negative = money out
 	Kind        string      `json:"kind"`   // "in", "out" or "cashback"
 	CreatedAt   time.Time   `json:"createdAt"`
+	// Cash back this payment earned; omitted when none.
+	Cashback *money.Money `json:"cashback,omitempty"`
 }
 
 type transactionsResponse struct {
@@ -77,13 +82,29 @@ func listTransactions(s store) gin.HandlerFunc {
 
 		txns := make([]transaction, 0, len(rows))
 		for _, r := range rows {
-			txns = append(txns, toTransaction(r))
+			t := toTransaction(txRow{r.ID, r.Name, r.Description, r.Kind, r.AmountMinor, r.Currency, r.MinorUnit, r.CreatedAt})
+			if r.CashbackMinor != nil {
+				t.Cashback = &money.Money{Minor: *r.CashbackMinor, Currency: r.Currency, Exponent: int(r.MinorUnit)}
+			}
+			txns = append(txns, t)
 		}
 		c.JSON(http.StatusOK, transactionsResponse{Transactions: txns})
 	}
 }
 
-func toTransaction(r db.ListTransactionsRow) transaction {
+// txRow is the shape every transaction query shares.
+type txRow struct {
+	ID          string
+	Name        string
+	Description string
+	Kind        string
+	AmountMinor int64
+	Currency    string
+	MinorUnit   int16
+	CreatedAt   time.Time
+}
+
+func toTransaction(r txRow) transaction {
 	return transaction{
 		ID:          r.ID,
 		Name:        r.Name,

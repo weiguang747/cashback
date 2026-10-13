@@ -145,6 +145,12 @@ export function addMoney(a: Money, b: Money): Money {
   return fromScaled(toScaled(a, digits) + toScaled(b, digits), digits, a.currency);
 }
 
+/** a − b, exactly. Both must be in the same currency. */
+export function subtractMoney(a: Money, b: Money): Money {
+  const negated = b.value.startsWith('-') ? b.value.slice(1) : `-${b.value}`;
+  return addMoney(a, { value: negated, currency: b.currency });
+}
+
 /** -1, 0 or 1 as a is less than, equal to or greater than b. Same currency only. */
 export function compareMoney(a: Money, b: Money): -1 | 0 | 1 {
   sameCurrency(a, b);

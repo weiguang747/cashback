@@ -6,15 +6,45 @@ package db
 
 import (
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Account struct {
 	ID           string
-	UserID       string
+	UserID       pgtype.UUID
 	Kind         string
 	Currency     string
 	BalanceMinor int64
 	CreatedAt    time.Time
+}
+
+type Campaign struct {
+	ID                  string
+	Name                string
+	AccountID           string
+	Currency            string
+	RateBps             int32
+	MinSpendMinor       int64
+	DailyCapMinor       int64
+	AwardIncrementMinor int64
+	BudgetMinor         int64
+	Timezone            string
+	StartsAt            time.Time
+	EndsAt              *time.Time
+	CreatedAt           time.Time
+}
+
+type CashbackAward struct {
+	ID                   string
+	CampaignID           string
+	UserID               string
+	PaymentTransactionID string
+	DebitTransactionID   string
+	CreditTransactionID  string
+	AmountMinor          int64
+	CampaignDay          time.Time
+	CreatedAt            time.Time
 }
 
 type Currency struct {

@@ -1,3 +1,5 @@
+import { StyleSheet, View } from 'react-native';
+
 import type { Transaction } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { colors, type Tone } from '@/theme';
@@ -28,10 +30,21 @@ export function TransactionRow({ transaction, subtitle, divider }: TransactionRo
       subtitle={subtitle}
       divider={divider}
       trailing={
-        <Text variant="numeric" style={{ color: k.amountColor }}>
-          {formatMoney(transaction.amount, { sign: true })}
-        </Text>
+        <View style={styles.trailing}>
+          <Text variant="numeric" style={{ color: k.amountColor }}>
+            {formatMoney(transaction.amount, { sign: true })}
+          </Text>
+          {transaction.cashback ? (
+            <Text variant="micro" color="onRewardMuted">
+              {`${formatMoney(transaction.cashback, { sign: true })} cash back`}
+            </Text>
+          ) : null}
+        </View>
       }
     />
   );
 }
+
+const styles = StyleSheet.create({
+  trailing: { alignItems: 'flex-end', gap: 2 },
+});

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
+	"cashback/server/internal/cashback"
 	"cashback/server/internal/database"
 	"cashback/server/internal/db"
 	"cashback/server/internal/idempotency"
@@ -31,6 +32,10 @@ type fakeStore struct {
 	err      error
 	payErr   error                                           // returned by Pay when set
 	paid     map[string]db.GetTransactionByIdempotencyKeyRow // by idempotency key
+	// Cash back: the campaign the user sees, their cash back account rows,
+	// and what Pay reports earning (5% when a campaign is set).
+	campaign     *db.GetCampaignStatusRow
+	cashbackTxns map[string][]db.ListCashbackTransactionsRow // by user id
 }
 
 func (f fakeStore) GetUser(_ context.Context, id string) (db.GetUserRow, error) {
@@ -84,6 +89,39 @@ func (f fakeStore) GetMainAccount(_ context.Context, arg db.GetMainAccountParams
 	return db.GetMainAccountRow{}, pgx.ErrNoRows
 }
 
+func (f fakeStore) GetUserAccount(_ context.Context, arg db.GetUserAccountParams) (db.GetUserAccountRow, error) {
+	if f.err != nil {
+		return db.GetUserAccountRow{}, f.err
+	}
+	for _, a := range f.accounts[arg.UserID] {
+		if a.Kind == arg.Kind && a.Currency == arg.Currency {
+			return db.GetUserAccountRow{ID: a.ID, BalanceMinor: a.BalanceMinor, MinorUnit: a.MinorUnit}, nil
+		}
+	}
+	return db.GetUserAccountRow{}, pgx.ErrNoRows
+}
+
+func (f fakeStore) GetCampaignStatus(_ context.Context, arg db.GetCampaignStatusParams) (db.GetCampaignStatusRow, error) {
+	if f.err != nil {
+		return db.GetCampaignStatusRow{}, f.err
+	}
+	if f.campaign == nil || f.campaign.Currency != arg.Currency {
+		return db.GetCampaignStatusRow{}, pgx.ErrNoRows
+	}
+	return *f.campaign, nil
+}
+
+func (f fakeStore) ListCashbackTransactions(_ context.Context, arg db.ListCashbackTransactionsParams) ([]db.ListCashbackTransactionsRow, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	rows := f.cashbackTxns[arg.UserID]
+	if arg.Limit != nil && int(*arg.Limit) < len(rows) {
+		return rows[:*arg.Limit], nil
+	}
+	return rows, nil
+}
+
 // Pay mimics database.Pay: refuses to overdraw, debits in place, and
 // replays a key that already paid.
 func (f fakeStore) Pay(_ context.Context, p database.PayParams) (database.PayResult, error) {
@@ -112,7 +150,11 @@ func (f fakeStore) Pay(_ context.Context, p database.PayParams) (database.PayRes
 				CreatedAt: time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC),
 			}
 			f.paid[p.IdempotencyKey] = row
-			return database.PayResult{Transaction: row, BalanceMinor: a.BalanceMinor}, nil
+			var cb *database.CashbackResult
+			if f.campaign != nil {
+				cb = &database.CashbackResult{CampaignID: f.campaign.ID, AmountMinor: p.AmountMinor / 20, Reason: cashback.Awarded}
+			}
+			return database.PayResult{Transaction: row, BalanceMinor: a.BalanceMinor, Cashback: cb}, nil
 		}
 	}
 	return database.PayResult{}, pgx.ErrNoRows

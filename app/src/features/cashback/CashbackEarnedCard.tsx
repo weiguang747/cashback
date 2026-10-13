@@ -1,16 +1,17 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Icon, Text } from '@/components';
-import { formatMoney, idr } from '@/lib/format';
+import type { Money } from '@/lib/api';
+import { formatMoney } from '@/lib/format';
 import { colors, radii, spacing } from '@/theme';
 
 /** Gold card on the success screen showing cash back earned. */
-export function CashbackEarnedCard({ amount, onRedeem }: { amount: number; onRedeem: () => void }) {
+export function CashbackEarnedCard({ amount, onPress }: { amount: Money; onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`You earned ${formatMoney(idr(amount))} cash back. Redeem`}
-      onPress={onRedeem}
+      accessibilityLabel={`You earned ${formatMoney(amount)} cash back. View cash back`}
+      onPress={onPress}
       style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
     >
       <View style={styles.icon}>
@@ -18,14 +19,14 @@ export function CashbackEarnedCard({ amount, onRedeem }: { amount: number; onRed
       </View>
       <View style={styles.copy}>
         <Text variant="bodyStrong" color="onReward">
-          You earned {formatMoney(idr(amount))} cash back
+          You earned {formatMoney(amount)} cash back
         </Text>
         <Text variant="caption" color="onRewardMuted">
           Added to your cash back balance
         </Text>
       </View>
       <Text variant="label" color="onReward">
-        Redeem
+        View
       </Text>
     </Pressable>
   );
