@@ -120,13 +120,13 @@ func TestListTransactionsPaging(t *testing.T) {
 // Search text is matched literally: LIKE wildcards in it are escaped.
 func TestListTransactionsSearchEscapesWildcards(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	var got db.ListTransactionsParams
+	var got db.SearchTransactionsParams
 	s := capturingTransactions{fakeStore: demoStore(0), got: &got}
 	if w := get(testRouter(s), `/v1/transactions?q=+50%25_off\+&kind=out`, andiID); w.Code != http.StatusOK {
 		t.Fatalf("status = %d (body: %s)", w.Code, w.Body)
 	}
-	if got.NamePattern == nil || *got.NamePattern != `%50\%\_off\\%` {
-		t.Errorf("pattern = %v, want %%50\\%%\\_off\\\\%%", got.NamePattern)
+	if got.NamePattern != `%50\%\_off\\%` {
+		t.Errorf("pattern = %q, want %%50\\%%\\_off\\\\%%", got.NamePattern)
 	}
 	if got.Kind == nil || *got.Kind != "out" {
 		t.Errorf("kind = %v, want out", got.Kind)
@@ -138,12 +138,12 @@ func TestListTransactionsSearchEscapesWildcards(t *testing.T) {
 
 type capturingTransactions struct {
 	fakeStore
-	got *db.ListTransactionsParams
+	got *db.SearchTransactionsParams
 }
 
-func (c capturingTransactions) ListTransactions(ctx context.Context, arg db.ListTransactionsParams) ([]db.ListTransactionsRow, error) {
+func (c capturingTransactions) SearchTransactions(ctx context.Context, arg db.SearchTransactionsParams) ([]db.SearchTransactionsRow, error) {
 	*c.got = arg
-	return c.fakeStore.ListTransactions(ctx, arg)
+	return c.fakeStore.SearchTransactions(ctx, arg)
 }
 
 // Amounts go out as exact decimal strings with a currency, and times in UTC.

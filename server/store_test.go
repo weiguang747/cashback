@@ -69,6 +69,23 @@ func (f fakeStore) ListAccounts(_ context.Context, userID string) ([]db.ListAcco
 }
 
 func (f fakeStore) ListTransactions(_ context.Context, arg db.ListTransactionsParams) ([]db.ListTransactionsRow, error) {
+	return f.transactions(arg, nil)
+}
+
+func (f fakeStore) SearchTransactions(_ context.Context, arg db.SearchTransactionsParams) ([]db.SearchTransactionsRow, error) {
+	rows, err := f.transactions(db.ListTransactionsParams{
+		UserID: arg.UserID, Limit: arg.Limit, BeforeCreatedAt: arg.BeforeCreatedAt, BeforeID: arg.BeforeID, Kind: arg.Kind,
+	}, &arg.NamePattern)
+	out := make([]db.SearchTransactionsRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, db.SearchTransactionsRow(r))
+	}
+	return out, err
+}
+
+// transactions filters the user's rows like the queries do; namePattern is
+// SearchTransactions' ILIKE pattern, nil for ListTransactions.
+func (f fakeStore) transactions(arg db.ListTransactionsParams, namePattern *string) ([]db.ListTransactionsRow, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -76,7 +93,7 @@ func (f fakeStore) ListTransactions(_ context.Context, arg db.ListTransactionsPa
 	for _, r := range f.txns[arg.UserID] {
 		if !beforeCursor(r.CreatedAt, r.ID, arg.BeforeCreatedAt, arg.BeforeID) ||
 			(arg.Kind != nil && r.Kind != *arg.Kind) ||
-			(arg.NamePattern != nil && !likeMatch(r.Name, *arg.NamePattern)) {
+			(namePattern != nil && !likeMatch(r.Name, *namePattern)) {
 			continue
 		}
 		out = append(out, r)

@@ -141,26 +141,30 @@ func (q *Queries) InsertTransaction(ctx context.Context, arg InsertTransactionPa
 const listTransactions = `-- name: ListTransactions :many
 SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at,
        ca.amount_minor AS cashback_minor
-FROM transactions t
-JOIN accounts a ON a.id = t.account_id
+FROM accounts a
+CROSS JOIN LATERAL (
+    SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, t.created_at
+    FROM transactions t
+    WHERE t.account_id = a.id
+      AND (t.created_at, t.id) < (COALESCE($1::timestamptz, 'infinity'),
+                                  COALESCE($2::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+      AND ($3::text IS NULL OR t.kind = $3::text)
+    ORDER BY t.created_at DESC, t.id DESC
+    LIMIT $4::int
+) t
 JOIN currencies c ON c.code = t.currency
 LEFT JOIN cashback_awards ca ON ca.payment_transaction_id = t.id
-WHERE a.user_id = $1::uuid AND a.kind = 'main'
-  AND (t.created_at, t.id) < (COALESCE($2::timestamptz, 'infinity'),
-                              COALESCE($3::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
-  AND ($4::text IS NULL OR t.kind = $4::text)
-  AND ($5::text IS NULL OR t.name ILIKE $5::text)
+WHERE a.user_id = $5::uuid AND a.kind = 'main'
 ORDER BY t.created_at DESC, t.id DESC
-LIMIT $6::int
+LIMIT $4::int
 `
 
 type ListTransactionsParams struct {
-	UserID          string
 	BeforeCreatedAt *time.Time
 	BeforeID        *string
 	Kind            *string
-	NamePattern     *string
 	Limit           int32
+	UserID          string
 }
 
 type ListTransactionsRow struct {
@@ -178,17 +182,19 @@ type ListTransactionsRow struct {
 // One page of a user's main-account activity, newest first, with the cash
 // back each payment earned (NULL if none). The page starts after the cursor
 // (created_at, id) of the previous page's last row; NULL starts at the
-// newest. The cursor is always a row comparison, so even a generic plan
-// seeks transactions_account_created_at_idx instead of scanning from the top.
-// kind and name_pattern (ILIKE) are optional filters.
+// newest. kind is an optional filter.
+//
+// The rows are read per account inside the LATERAL, so Postgres walks
+// transactions_account_created_at_idx in order and stops after the page.
+// Joining accounts to transactions directly doesn't: a join only keeps its
+// outer side's order, so every page read and sorted the whole history.
 func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsParams) ([]ListTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listTransactions,
-		arg.UserID,
 		arg.BeforeCreatedAt,
 		arg.BeforeID,
 		arg.Kind,
-		arg.NamePattern,
 		arg.Limit,
+		arg.UserID,
 	)
 	if err != nil {
 		return nil, err
@@ -197,6 +203,92 @@ func (q *Queries) ListTransactions(ctx context.Context, arg ListTransactionsPara
 	var items []ListTransactionsRow
 	for rows.Next() {
 		var i ListTransactionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Kind,
+			&i.AmountMinor,
+			&i.Currency,
+			&i.MinorUnit,
+			&i.CreatedAt,
+			&i.CashbackMinor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchTransactions = `-- name: SearchTransactions :many
+SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at,
+       ca.amount_minor AS cashback_minor
+FROM accounts a
+CROSS JOIN LATERAL (
+    SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, t.created_at
+    FROM transactions t
+    WHERE t.account_id = a.id
+      AND (t.created_at, t.id) < (COALESCE($1::timestamptz, 'infinity'),
+                                  COALESCE($2::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
+      AND ($3::text IS NULL OR t.kind = $3::text)
+      AND t.name ILIKE $4::text
+    ORDER BY t.created_at DESC, t.id DESC
+    LIMIT $5::int
+) t
+JOIN currencies c ON c.code = t.currency
+LEFT JOIN cashback_awards ca ON ca.payment_transaction_id = t.id
+WHERE a.user_id = $6::uuid AND a.kind = 'main'
+ORDER BY t.created_at DESC, t.id DESC
+LIMIT $5::int
+`
+
+type SearchTransactionsParams struct {
+	BeforeCreatedAt *time.Time
+	BeforeID        *string
+	Kind            *string
+	NamePattern     string
+	Limit           int32
+	UserID          string
+}
+
+type SearchTransactionsRow struct {
+	ID            string
+	Name          string
+	Description   string
+	Kind          string
+	AmountMinor   int64
+	Currency      string
+	MinorUnit     int16
+	CreatedAt     time.Time
+	CashbackMinor *int64
+}
+
+// ListTransactions for rows whose name matches name_pattern (ILIKE, already
+// escaped). A separate query so the pattern is required: the best plan
+// depends on it (transactions_name_trgm_idx for a rare term, walking
+// transactions_account_created_at_idx for a short or common one), so it
+// must be planned with the actual pattern every time, never as a cached
+// generic plan (see pgStore.SearchTransactions).
+func (q *Queries) SearchTransactions(ctx context.Context, arg SearchTransactionsParams) ([]SearchTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, searchTransactions,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.Kind,
+		arg.NamePattern,
+		arg.Limit,
+		arg.UserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchTransactionsRow
+	for rows.Next() {
+		var i SearchTransactionsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,

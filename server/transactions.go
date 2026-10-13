@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"cashback/server/internal/database"
@@ -25,6 +27,7 @@ type store interface {
 	GetUserByEmail(ctx context.Context, email string) (db.GetUserByEmailRow, error)
 	ListAccounts(ctx context.Context, userID string) ([]db.ListAccountsRow, error)
 	ListTransactions(ctx context.Context, arg db.ListTransactionsParams) ([]db.ListTransactionsRow, error)
+	SearchTransactions(ctx context.Context, arg db.SearchTransactionsParams) ([]db.SearchTransactionsRow, error)
 	ListCashbackTransactions(ctx context.Context, arg db.ListCashbackTransactionsParams) ([]db.ListCashbackTransactionsRow, error)
 	GetUserAccount(ctx context.Context, arg db.GetUserAccountParams) (db.GetUserAccountRow, error)
 	GetCampaignStatus(ctx context.Context, arg db.GetCampaignStatusParams) (db.GetCampaignStatusRow, error)
@@ -53,6 +56,32 @@ func newPgStore(pool *pgxpool.Pool) pgStore {
 // moneySlots leaves at least half the pool to everything else.
 func moneySlots(maxConns int32) int {
 	return max(1, int(maxConns)/2)
+}
+
+// SearchTransactions runs with a plan made for this search text: the
+// trigram index for a rare term, the date-ordered index for a short or
+// common one. A cached generic plan would always pick one of them, and the
+// wrong one costs 100 ms or more on a long history. Planning each search
+// costs about 0.1 ms.
+func (s pgStore) SearchTransactions(ctx context.Context, arg db.SearchTransactionsParams) ([]db.SearchTransactionsRow, error) {
+	return db.New(freshPlans{s.pool}).SearchTransactions(ctx, arg)
+}
+
+// freshPlans runs every query as an unnamed statement (pgx's
+// QueryExecModeExec), which Postgres plans with the actual parameters each
+// time instead of caching a plan.
+type freshPlans struct{ pool *pgxpool.Pool }
+
+func (f freshPlans) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return f.pool.Exec(ctx, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
+}
+
+func (f freshPlans) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return f.pool.Query(ctx, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
+}
+
+func (f freshPlans) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return f.pool.QueryRow(ctx, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
 }
 
 func (s pgStore) Pay(ctx context.Context, p database.PayParams) (database.PayResult, error) {
@@ -132,16 +161,27 @@ func listTransactions(s store) gin.HandlerFunc {
 			}
 			params.Kind = &k
 		}
-		if q := strings.TrimSpace(c.Query("q")); q != "" {
-			if utf8.RuneCountInString(q) > maxSearchLen {
-				httpx.Error(c, http.StatusBadRequest, fmt.Sprintf("search must be at most %d characters", maxSearchLen))
-				return
-			}
-			pattern := "%" + likeEscaper.Replace(q) + "%"
-			params.NamePattern = &pattern
+		q := strings.TrimSpace(c.Query("q"))
+		if utf8.RuneCountInString(q) > maxSearchLen {
+			httpx.Error(c, http.StatusBadRequest, fmt.Sprintf("search must be at most %d characters", maxSearchLen))
+			return
 		}
 
-		rows, err := s.ListTransactions(c.Request.Context(), params)
+		var rows []db.ListTransactionsRow
+		var err error
+		if q == "" {
+			rows, err = s.ListTransactions(c.Request.Context(), params)
+		} else {
+			// A separate query, planned for this search text (see pgStore.SearchTransactions).
+			var found []db.SearchTransactionsRow
+			found, err = s.SearchTransactions(c.Request.Context(), db.SearchTransactionsParams{
+				UserID: params.UserID, Limit: params.Limit, BeforeCreatedAt: params.BeforeCreatedAt, BeforeID: params.BeforeID,
+				Kind: params.Kind, NamePattern: "%" + likeEscaper.Replace(q) + "%",
+			})
+			for _, r := range found {
+				rows = append(rows, db.ListTransactionsRow(r))
+			}
+		}
 		if err != nil {
 			httpx.InternalError(c, "list transactions failed", err)
 			return

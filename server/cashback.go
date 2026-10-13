@@ -78,15 +78,17 @@ func getCampaign(s store) gin.HandlerFunc {
 }
 
 type cashbackHistoryResponse struct {
-	Balance      money.Money   `json:"balance"`
+	// The cash back balance on the first page; null on later pages, which
+	// skip looking it up.
+	Balance      *money.Money  `json:"balance"`
 	Transactions []transaction `json:"transactions"`
 	// Pass as ?cursor= for the next page; null on the last page.
 	NextCursor *string `json:"nextCursor"`
 }
 
-// listCashbackHistory returns the signed-in user's cash back balance and
-// one page of the activity on their cash back account, newest first.
-// Optional query params: limit and cursor (see paging.go).
+// listCashbackHistory returns one page of the activity on the signed-in
+// user's cash back account, newest first, and on the first page their cash
+// back balance. Optional query params: limit and cursor (see paging.go).
 func listCashbackHistory(s store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
@@ -98,14 +100,20 @@ func listCashbackHistory(s store) gin.HandlerFunc {
 			return
 		}
 
-		account, err := s.GetUserAccount(ctx, db.GetUserAccountParams{UserID: user.ID, Kind: "cashback", Currency: cur})
-		if errors.Is(err, pgx.ErrNoRows) {
-			httpx.ErrorCode(c, http.StatusNotFound, "no_cashback_account", "you don't have a cash back account in this currency")
-			return
-		}
-		if err != nil {
-			httpx.InternalError(c, "get cash back account failed", err)
-			return
+		// Only the first page carries the balance (and so checks the account
+		// exists); a cursor means the client already has both.
+		var balance *money.Money
+		if p.beforeCreatedAt == nil {
+			account, err := s.GetUserAccount(ctx, db.GetUserAccountParams{UserID: user.ID, Kind: "cashback", Currency: cur})
+			if errors.Is(err, pgx.ErrNoRows) {
+				httpx.ErrorCode(c, http.StatusNotFound, "no_cashback_account", "you don't have a cash back account in this currency")
+				return
+			}
+			if err != nil {
+				httpx.InternalError(c, "get cash back account failed", err)
+				return
+			}
+			balance = &money.Money{Minor: account.BalanceMinor, Currency: cur, Exponent: int(account.MinorUnit)}
 		}
 		rows, err := s.ListCashbackTransactions(ctx, db.ListCashbackTransactionsParams{
 			UserID: user.ID, Currency: cur, Limit: p.limit, BeforeCreatedAt: p.beforeCreatedAt, BeforeID: p.beforeID,
@@ -122,7 +130,7 @@ func listCashbackHistory(s store) gin.HandlerFunc {
 			txns = append(txns, toTransaction(txRow(r)))
 		}
 		c.JSON(http.StatusOK, cashbackHistoryResponse{
-			Balance:      money.Money{Minor: account.BalanceMinor, Currency: cur, Exponent: int(account.MinorUnit)},
+			Balance:      balance,
 			Transactions: txns,
 			NextCursor:   next,
 		})

@@ -104,9 +104,14 @@ export async function getCampaign(opts: { signal?: AbortSignal } = {}): Promise<
   return data.campaign;
 }
 
-export type CashbackHistory = { balance: Money; transactions: Transaction[]; nextCursor: string | null };
+export type CashbackHistory = {
+  /** The cash back balance: on the first page only, null on later pages. */
+  balance: Money | null;
+  transactions: Transaction[];
+  nextCursor: string | null;
+};
 
-/** The cash back balance and one page of its activity, newest first. */
+/** One page of cash back activity, newest first, with the balance on the first page. */
 export function getCashbackHistory(opts: PageOptions = {}): Promise<CashbackHistory> {
   const query = queryString({ limit: opts.limit, cursor: opts.cursor });
   return request<CashbackHistory>(`/v1/cashback/history${query}`, { signal: opts.signal });

@@ -23,7 +23,8 @@ export function useCashbackHistory() {
       getCashbackHistory({ cursor, signal }).then((page) => ({
         items: page.transactions,
         nextCursor: page.nextCursor,
-        meta: { balance: page.balance },
+        // Only the first page has the balance; usePages keeps the first page's meta.
+        meta: page.balance ? { balance: page.balance } : null,
       })),
     [],
   );

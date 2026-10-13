@@ -286,9 +286,9 @@ func (q *Queries) ListCampaigns(ctx context.Context) ([]ListCampaignsRow, error)
 const listCashbackTransactions = `-- name: ListCashbackTransactions :many
 SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at
 FROM transactions t
-JOIN accounts a ON a.id = t.account_id
 JOIN currencies c ON c.code = t.currency
-WHERE a.user_id = $1::uuid AND a.kind = 'cashback' AND a.currency = $2
+WHERE t.account_id = (SELECT a.id FROM accounts a
+                      WHERE a.user_id = $1::uuid AND a.kind = 'cashback' AND a.currency = $2)
   AND (t.created_at, t.id) < (COALESCE($3::timestamptz, 'infinity'),
                               COALESCE($4::uuid, 'ffffffff-ffff-ffff-ffff-ffffffffffff'))
 ORDER BY t.created_at DESC, t.id DESC
@@ -315,7 +315,10 @@ type ListCashbackTransactionsRow struct {
 }
 
 // One page of a user's cash back account activity, newest first. Paged by
-// cursor like ListTransactions.
+// cursor like ListTransactions. The account is looked up first (it's
+// unique per user and currency), so the page walks
+// transactions_account_created_at_idx in order instead of sorting the
+// whole history.
 func (q *Queries) ListCashbackTransactions(ctx context.Context, arg ListCashbackTransactionsParams) ([]ListCashbackTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listCashbackTransactions,
 		arg.UserID,

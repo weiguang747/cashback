@@ -203,10 +203,83 @@ func TestListTransactionsPaging(t *testing.T) {
 	// Wildcards in the search text are escaped by the handler; here the
 	// escaped pattern must match only the literal text.
 	for pattern, want := range map[string]int{`%50\% OFF\_%`: 1, `%50\%\_%`: 0, `%shop%`: 6} {
-		rows, err := q.ListTransactions(ctx, db.ListTransactionsParams{UserID: u.id, Limit: 100, NamePattern: &pattern})
+		rows, err := q.SearchTransactions(ctx, db.SearchTransactionsParams{UserID: u.id, Limit: 100, NamePattern: pattern})
 		if err != nil || len(rows) != want {
 			t.Errorf("pattern %q: %d rows, want %d (%v)", pattern, len(rows), want, err)
 		}
+	}
+}
+
+// A user with main accounts in two currencies gets one list across both,
+// newest first, paged without gaps or repeats: each account is read in
+// order separately (LATERAL), then merged. Searching and the kind filter
+// page the same way.
+func TestListTransactionsAcrossMainAccounts(t *testing.T) {
+	pool := openTestDB(t)
+	ctx := context.Background()
+	q := db.New(begin(t, pool))
+	u := createUser(t, q, "two-mains@test.example", "IDR")
+	usd, err := q.UpsertAccount(ctx, db.UpsertAccountParams{UserID: u.id, Kind: "main", Currency: "USD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().Truncate(time.Microsecond)
+	var want []string // newest first
+	for i := range 10 {
+		acct, cur := u.main, "IDR"
+		if i%3 == 1 {
+			acct, cur = usd, "USD"
+		}
+		name := fmt.Sprintf("Shop %d", i)
+		if i%2 == 0 {
+			name = fmt.Sprintf("Kopi %d", i)
+		}
+		insert(t, q, db.InsertTransactionParams{AccountID: acct, Name: name, Description: "x", Kind: "out", AmountMinor: -100,
+			Currency: cur, CreatedAt: base.Add(-time.Duration(i) * time.Minute)})
+	}
+
+	page := func(search string) []string {
+		var ids []string
+		var before *time.Time
+		var beforeID *string
+		for {
+			var rows []db.ListTransactionsRow
+			if search == "" {
+				rows, err = q.ListTransactions(ctx, db.ListTransactionsParams{UserID: u.id, Limit: 4, BeforeCreatedAt: before, BeforeID: beforeID})
+			} else {
+				var found []db.SearchTransactionsRow
+				found, err = q.SearchTransactions(ctx, db.SearchTransactionsParams{UserID: u.id, Limit: 2, BeforeCreatedAt: before,
+					BeforeID: beforeID, NamePattern: search})
+				for _, r := range found {
+					rows = append(rows, db.ListTransactionsRow(r))
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range rows {
+				ids = append(ids, r.Name)
+			}
+			if len(rows) == 0 {
+				return ids
+			}
+			last := rows[len(rows)-1]
+			before, beforeID = &last.CreatedAt, &last.ID
+		}
+	}
+	for i := range 10 {
+		if i%2 == 0 {
+			want = append(want, fmt.Sprintf("Kopi %d", i))
+		} else {
+			want = append(want, fmt.Sprintf("Shop %d", i))
+		}
+	}
+	if got := page(""); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("list = %v\nwant   %v", got, want)
+	}
+	if got := page("%kopi%"); fmt.Sprint(got) != "[Kopi 0 Kopi 2 Kopi 4 Kopi 6 Kopi 8]" {
+		t.Errorf("search = %v, want every Kopi row newest first across both accounts", got)
 	}
 }
 

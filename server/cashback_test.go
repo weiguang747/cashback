@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -113,5 +117,40 @@ func TestCashbackHistory(t *testing.T) {
 	}
 	if w := get(router, "/v1/cashback/history?limit=0", andiID); w.Code != 400 {
 		t.Errorf("limit=0: status = %d, want 400", w.Code)
+	}
+}
+
+// noAccountLookup fails GetUserAccount, to show a request didn't need it.
+type noAccountLookup struct{ fakeStore }
+
+func (noAccountLookup) GetUserAccount(context.Context, db.GetUserAccountParams) (db.GetUserAccountRow, error) {
+	return db.GetUserAccountRow{}, errors.New("account looked up")
+}
+
+func TestCashbackHistoryBalanceOnFirstPageOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := demoStore(0)
+	s.accounts[andiID][1].BalanceMinor = 350_000
+	for i := range 3 {
+		s.cashbackTxns = map[string][]db.ListCashbackTransactionsRow{andiID: append(s.cashbackTxns[andiID], db.ListCashbackTransactionsRow{
+			ID: fmt.Sprintf("00000000-0000-4000-8000-00000000000%d", i), Name: "Cash back", Description: "From Kopi Senja",
+			Kind: "cashback", AmountMinor: 175_000, Currency: "IDR", MinorUnit: 2,
+			CreatedAt: time.Date(2026, 10, 13, 2, 42-i, 0, 0, time.UTC),
+		})}
+	}
+
+	var first struct {
+		Balance    *struct{ Value string }
+		NextCursor *string
+	}
+	w := get(testRouter(s), "/v1/cashback/history?limit=2", andiID)
+	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil || first.Balance == nil || first.Balance.Value != "3500.00" || first.NextCursor == nil {
+		t.Fatalf("first page = %d %s, want the balance and a cursor", w.Code, w.Body)
+	}
+
+	// The next page doesn't look the account up and says so with null.
+	w = get(testRouter(noAccountLookup{s}), "/v1/cashback/history?limit=2&cursor="+*first.NextCursor, andiID)
+	if w.Code != 200 || !strings.HasPrefix(w.Body.String(), `{"balance":null,"transactions":[{"id":"00000000-0000-4000-8000-000000000002"`) {
+		t.Errorf("second page = %d %s, want balance null and the third row", w.Code, w.Body)
 	}
 }

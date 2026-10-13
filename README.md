@@ -157,7 +157,7 @@ A replayed response carries the header `Idempotent-Replayed: true`.
 
 #### `GET /v1/cashback/history?currency=IDR&limit=20&cursor=…`
 
-Paged like `/v1/transactions`; `balance` is on every page.
+Paged like `/v1/transactions`. `balance` is on the first page only; later pages (with a `cursor`) have `"balance": null` and skip looking it up.
 
 ```json
 {
@@ -172,7 +172,7 @@ Paged like `/v1/transactions`; `balance` is on every page.
 }
 ```
 
-`404` `no_cashback_account` if the user has no cash back account in that currency.
+`404` `no_cashback_account` (first page) if the user has no cash back account in that currency.
 
 #### `POST /v1/cashback/redeem`
 
