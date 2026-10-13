@@ -75,7 +75,7 @@ export default function SignInScreen() {
 
         <Button label="Continue" onPress={signIn} disabled={!valid} loading={loading} />
         <Text variant="caption" color="textMuted" align="center" style={styles.note}>
-          Demo app · no password needed
+          Demo App
         </Text>
       </KeyboardAvoidingView>
     </Screen>

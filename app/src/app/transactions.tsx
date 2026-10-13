@@ -56,6 +56,7 @@ export default function TransactionsScreen() {
         keyExtractor={(t) => t.id}
         stickySectionHeadersEnabled={false}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.list}
         renderSectionHeader={({ section }) => (
           <Text variant="overline" color="textMuted" accessibilityRole="header" style={styles.sectionHeader}>

@@ -19,7 +19,18 @@ export function Amount({ value, size = 'md', color = colors.text, currencyColor,
   const figure = formatNumber(value);
   return (
     <View style={[styles.row, { gap: s.gap }]} accessible accessibilityLabel={`Rp ${figure}`}>
-      <Text style={{ fontFamily: fonts.numericSemibold, fontSize: s.currency, color: currencyColor ?? color }}>Rp</Text>
+      <Text
+        style={{
+          fontFamily: fonts.numericSemibold,
+          fontSize: s.currency,
+          // Must be set explicitly: the inherited body line height (22) is smaller
+          // than the currency font size and clips the top of "Rp".
+          lineHeight: s.currency * 1.2,
+          color: currencyColor ?? color,
+        }}
+      >
+        Rp
+      </Text>
       <Text
         style={{
           fontFamily: fonts.numericBold,

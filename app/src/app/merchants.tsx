@@ -34,6 +34,7 @@ export default function MerchantsScreen() {
         data={results}
         keyExtractor={(m) => m.id}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.list}
         ListHeaderComponent={
           <Text variant="overline" color="textMuted" style={styles.overline}>
