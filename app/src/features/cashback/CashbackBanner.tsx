@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Icon, ProgressBar, Text } from '@/components';
-import { formatIDR } from '@/lib/format';
+import { formatMoney, idr } from '@/lib/format';
 import { colors, fonts, radii, spacing } from '@/theme';
 
 type CashbackBannerProps =
@@ -69,13 +69,13 @@ export function CashbackBanner(props: CashbackBannerProps) {
       <View style={styles.cap}>
         <View style={styles.capLabels}>
           <Text variant="micro" color="onRewardMuted">
-            Today's cash back
+            Today’s cash back
           </Text>
           <Text variant="micro" color="onRewardMuted">
             <Text variant="numericSmall" color="onReward">
-              {formatIDR(earned)}
+              {formatMoney(idr(earned))}
             </Text>{' '}
-            / {formatIDR(dailyCap)} daily cap
+            / {formatMoney(idr(dailyCap))} daily cap
           </Text>
         </View>
         <ProgressBar
@@ -90,7 +90,7 @@ export function CashbackBanner(props: CashbackBannerProps) {
           </Text>
         ) : (
           <Text variant="micro" color="onRewardMuted">
-            {formatIDR(dailyCap - earned)} left to earn today
+            {formatMoney(idr(dailyCap - earned))} left to earn today
           </Text>
         )}
       </View>

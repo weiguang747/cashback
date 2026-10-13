@@ -5,7 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { Amount, Button, Icon, ListRow, ResultHero, Screen, ScreenHeader, Text } from '@/components';
 import { demo } from '@/config/demo';
 import { account } from '@/data/mock';
-import { formatIDR } from '@/lib/format';
+import { formatMoney, idr } from '@/lib/format';
 import { colors, radii, spacing } from '@/theme';
 
 /** Move the full cash back balance into the available balance. */
@@ -28,8 +28,8 @@ export default function RedeemScreen() {
           status="success"
           ringColor={colors.reward}
           title="Cash back redeemed"
-          figure={<Amount value={account.cashback} size="md" currencyColor={colors.textMuted} />}
-          message={`Added to your available balance. Your new balance is ${formatIDR(account.balance + account.cashback)}.`}
+          figure={<Amount money={idr(account.cashback)} size="md" currencyColor={colors.textMuted} />}
+          message={`Added to your available balance. Your new balance is ${formatMoney(idr(account.balance + account.cashback))}.`}
         />
         <Button label="Done" onPress={() => router.dismissTo('/home')} />
       </Screen>
@@ -47,7 +47,7 @@ export default function RedeemScreen() {
         <Text variant="captionStrong" color="onRewardMuted" style={styles.heroLabel}>
           Cash back balance
         </Text>
-        <Amount value={account.cashback} size="md" color={colors.onReward} />
+        <Amount money={idr(account.cashback)} size="md" color={colors.onReward} />
         <Text variant="caption" color="onRewardMuted">
           Earned from {Math.round(demo.cashbackRate * 100)}% cash back on your payments
         </Text>
@@ -66,7 +66,7 @@ export default function RedeemScreen() {
               </View>
             }
             title="Available balance"
-            subtitle={formatIDR(account.balance)}
+            subtitle={formatMoney(idr(account.balance))}
           />
         </View>
         <Text variant="caption" color="textMuted">
@@ -77,7 +77,7 @@ export default function RedeemScreen() {
       <View style={styles.flex} />
 
       <Button
-        label={step === 'processing' ? 'Redeeming…' : `Redeem ${formatIDR(account.cashback)}`}
+        label={step === 'processing' ? 'Redeeming…' : `Redeem ${formatMoney(idr(account.cashback))}`}
         loading={step === 'processing'}
         onPress={redeem}
       />

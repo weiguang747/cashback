@@ -70,7 +70,7 @@ export default function TransactionsScreen() {
         ListHeaderComponent={
           error && data ? (
             <Text variant="caption" color="danger" accessibilityRole="alert" style={styles.refreshError}>
-              Couldn't refresh. {error}
+              Couldn’t refresh. {error}
             </Text>
           ) : null
         }

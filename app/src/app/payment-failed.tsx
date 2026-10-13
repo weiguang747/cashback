@@ -2,6 +2,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { Amount, Button, Notice, ResultHero, Screen } from '@/components';
+import { idr } from '@/lib/format';
 import { colors, spacing } from '@/theme';
 
 const messages = {
@@ -21,7 +22,7 @@ export default function PaymentFailedScreen() {
       <ResultHero
         status="error"
         title="Payment failed"
-        figure={<Amount value={amount} size="md" color={colors.textMuted} strikethrough />}
+        figure={<Amount money={idr(amount)} size="md" color={colors.textMuted} strikethrough />}
         message={messages[reason ?? 'error'] ?? messages.error}
       />
 

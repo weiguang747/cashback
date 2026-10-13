@@ -1,5 +1,5 @@
 import type { Transaction } from '@/lib/api';
-import { formatIDR } from '@/lib/format';
+import { formatMoney } from '@/lib/format';
 import { colors, type Tone } from '@/theme';
 
 import { ListRow } from './ListRow';
@@ -29,7 +29,7 @@ export function TransactionRow({ transaction, subtitle, divider }: TransactionRo
       divider={divider}
       trailing={
         <Text variant="numeric" style={{ color: k.amountColor }}>
-          {formatIDR(transaction.amount, { sign: true })}
+          {formatMoney(transaction.amount, { sign: true })}
         </Text>
       }
     />

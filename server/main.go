@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"cashback/server/internal/database"
+	"cashback/server/internal/db"
 	"cashback/server/internal/httpx"
 )
 
@@ -16,13 +21,27 @@ func main() {
 		port = "8080"
 	}
 
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL is not set, e.g. postgres://cashback:cashback@localhost:5432/cashback")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	pool, err := database.Open(ctx, dbURL)
+	cancel()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer pool.Close()
+
 	// Listen on all interfaces (":8080"), not "localhost:8080" —
 	// inside a container, localhost is unreachable from your Mac.
-	setupRouter().Run(":" + port)
+	if err := setupRouter(db.New(pool)).Run(":" + port); err != nil {
+		log.Fatal(err)
+	}
 }
 
 // setupRouter registers all routes. It's separate from main so tests can use it.
-func setupRouter() *gin.Engine {
+func setupRouter(store transactionStore) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Logger(), httpx.Recovery())
 	httpx.UseJSONErrors(router)
@@ -36,7 +55,7 @@ func setupRouter() *gin.Engine {
 	// can ship as /v2 without breaking app versions already installed.
 	v1 := router.Group("/v1")
 	v1.POST("/auth/sign-in", signIn)
-	v1.GET("/transactions", listTransactions)
+	v1.GET("/transactions", listTransactions(store))
 
 	return router
 }

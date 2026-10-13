@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Amount, Button, Icon, Text } from '@/components';
-import { formatIDR } from '@/lib/format';
+import { formatMoney, idr } from '@/lib/format';
 import { colors, radii, spacing } from '@/theme';
 
 type BalanceCardProps = {
@@ -27,11 +27,11 @@ export function BalanceCard({ balance, currency, cashback, onRedeem, onPay }: Ba
         </View>
       </View>
 
-      <Amount value={balance} size="sm" color={colors.onBrand} currencyColor={colors.onBrandMuted} />
+      <Amount money={idr(balance)} size="sm" color={colors.onBrand} currencyColor={colors.onBrandMuted} />
 
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Cash back ${formatIDR(cashback)}. Redeem`}
+        accessibilityLabel={`Cash back ${formatMoney(idr(cashback))}. Redeem`}
         onPress={onRedeem}
         style={({ pressed }) => [styles.cashback, pressed && styles.cashbackPressed]}
       >
@@ -43,7 +43,7 @@ export function BalanceCard({ balance, currency, cashback, onRedeem, onPay }: Ba
             Cash back
           </Text>
           <Text variant="numeric" color="onBrand">
-            {formatIDR(cashback)}
+            {formatMoney(idr(cashback))}
           </Text>
         </View>
         <View style={styles.redeem}>

@@ -12,6 +12,16 @@ export function signIn(email: string): Promise<SignInResponse> {
   return post<SignInResponse>('/v1/auth/sign-in', { email });
 }
 
+/**
+ * An exact amount. `value` is a decimal string in major units ("-35000.00"),
+ * never a JS number, so large amounts and decimals keep full precision.
+ */
+export type Money = {
+  value: string;
+  /** ISO 4217 code, e.g. "IDR". */
+  currency: string;
+};
+
 export type TransactionKind = 'in' | 'out' | 'cashback';
 
 export type Transaction = {
@@ -19,10 +29,10 @@ export type Transaction = {
   name: string;
   /** e.g. "Payment", "Received", "Bill" */
   description: string;
-  /** Whole rupiah. Negative for money out. */
-  amount: number;
+  /** Negative for money out. */
+  amount: Money;
   kind: TransactionKind;
-  /** ISO 8601 timestamp. */
+  /** ISO 8601 timestamp in UTC; show it in the device's time zone. */
   createdAt: string;
 };
 

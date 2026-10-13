@@ -1,22 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getTransactions, type Transaction } from './api';
+import { deviceLocale } from './locale';
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/** "Today", "Yesterday", or "10 Oct". Uses the device's time zone. */
+/** "Today", "Yesterday", "10 Oct", or "10 Oct 2025" in the device locale and time zone. */
 export function dayLabel(date: Date, now = new Date()): string {
+  const { languageTag } = deviceLocale();
   const days = Math.round((startOfDay(now).getTime() - startOfDay(date).getTime()) / 86_400_000);
-  if (days === 0) return 'Today';
-  if (days === 1) return 'Yesterday';
-  return `${date.getDate()} ${MONTHS[date.getMonth()]}`;
+  if (days === 0 || days === 1) {
+    const word = relativeDay(languageTag, -days);
+    return word.charAt(0).toLocaleUpperCase(languageTag) + word.slice(1);
+  }
+  return new Intl.DateTimeFormat(languageTag, {
+    day: 'numeric',
+    month: 'short',
+    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+  }).format(date);
 }
 
-/** "8:42 AM". */
+/** "8:42 AM" or "08.42", following the device's 12/24-hour setting. */
 export function timeLabel(date: Date): string {
-  const h = date.getHours();
-  const m = String(date.getMinutes()).padStart(2, '0');
-  return `${h % 12 || 12}:${m} ${h < 12 ? 'AM' : 'PM'}`;
+  const { languageTag, uses24hourClock } = deviceLocale();
+  return new Intl.DateTimeFormat(languageTag, {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: uses24hourClock === null ? undefined : !uses24hourClock,
+  }).format(date);
+}
+
+/** "today" / "yesterday" (or "hari ini" / "kemarin") for offset 0 / -1. */
+function relativeDay(locale: string, offset: number): string {
+  if (typeof Intl.RelativeTimeFormat === 'function') {
+    return new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(offset, 'day');
+  }
+  return offset === 0 ? 'today' : 'yesterday';
 }
 
 /** Groups newest-first transactions into day sections. */
@@ -45,26 +62,36 @@ export function useTransactions(limit?: number) {
   const [loading, setLoading] = useState(true);
   const controller = useRef<AbortController | null>(null);
 
-  const load = useCallback(async () => {
+  // State is only set in the promise callbacks, so the mount effect below
+  // doesn't trigger a synchronous re-render.
+  const fetchTransactions = useCallback(() => {
     controller.current?.abort();
     const c = new AbortController();
     controller.current = c;
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await getTransactions({ limit, signal: c.signal }));
-    } catch (e) {
-      if (c.signal.aborted) return;
-      setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
-    } finally {
-      if (!c.signal.aborted) setLoading(false);
-    }
+    return getTransactions({ limit, signal: c.signal }).then(
+      (result) => {
+        setData(result);
+        setError(null);
+        setLoading(false);
+      },
+      (e) => {
+        if (c.signal.aborted) return;
+        setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+        setLoading(false);
+      },
+    );
   }, [limit]);
 
-  useEffect(() => {
-    load();
-    return () => controller.current?.abort();
-  }, [load]);
+  const reload = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    return fetchTransactions();
+  }, [fetchTransactions]);
 
-  return { data, error, loading, reload: load };
+  useEffect(() => {
+    fetchTransactions();
+    return () => controller.current?.abort();
+  }, [fetchTransactions]);
+
+  return { data, error, loading, reload };
 }

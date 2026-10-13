@@ -5,7 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { Amount, Button, Keypad, Pill, Screen, ScreenHeader, Text, Tile, applyKey } from '@/components';
 import { demo } from '@/config/demo';
 import { account, findMerchant } from '@/data/mock';
-import { formatIDR, formatNumber } from '@/lib/format';
+import { formatMoney, idr } from '@/lib/format';
 import { colors, radii, spacing, type AmountSize } from '@/theme';
 
 /** Enter an amount and simulate paying the chosen merchant. */
@@ -63,21 +63,21 @@ export default function PayScreen() {
           Enter amount
         </Text>
         <View accessibilityLiveRegion="polite">
-          <Amount value={amount} size={size} color={figureColor} />
+          <Amount money={idr(amount)} size={size} color={figureColor} />
         </View>
         {overBalance ? (
           <Pill tone="danger" icon="alert">
-            {`Amount exceeds your balance of ${formatIDR(account.balance)}`}
+            {`Amount exceeds your balance of ${formatMoney(idr(account.balance))}`}
           </Pill>
         ) : (
-          <Pill>{`Balance ${formatIDR(account.balance)}`}</Pill>
+          <Pill>{`Balance ${formatMoney(idr(account.balance))}`}</Pill>
         )}
       </View>
 
       <Keypad disabled={processing} onPress={(k) => setAmount((a) => applyKey(a, k))} />
 
       <Button
-        label={processing ? 'Processing…' : `Pay Rp ${formatNumber(amount)}`}
+        label={processing ? 'Processing…' : `Pay ${formatMoney(idr(amount))}`}
         loading={processing}
         disabled={blocked}
         onPress={pay}

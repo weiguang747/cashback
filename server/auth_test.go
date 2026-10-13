@@ -12,7 +12,7 @@ import (
 
 func TestSignIn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter()
+	router := setupRouter(fakeStore{})
 
 	tests := []struct {
 		name      string

@@ -5,7 +5,7 @@ import { Amount, Button, DetailList, ResultHero, Screen } from '@/components';
 import { demo } from '@/config/demo';
 import { findMerchant, payment } from '@/data/mock';
 import { CashbackEarnedCard } from '@/features/cashback/CashbackEarnedCard';
-import { cashbackFor } from '@/lib/format';
+import { cashbackFor, idr } from '@/lib/format';
 import { colors, spacing } from '@/theme';
 
 export default function PaymentSuccessScreen() {
@@ -18,7 +18,7 @@ export default function PaymentSuccessScreen() {
       <ResultHero
         status="success"
         title="Payment successful"
-        figure={<Amount value={amount} size="md" currencyColor={colors.textMuted} />}
+        figure={<Amount money={idr(amount)} size="md" currencyColor={colors.textMuted} />}
         message="Your payment has been sent."
       />
 
