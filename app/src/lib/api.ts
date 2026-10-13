@@ -1,4 +1,4 @@
-import { getUser } from './session';
+import { clearUser, getUser } from './session';
 
 /**
  * Client for the cashback server. Set EXPO_PUBLIC_API_URL in `.env` to point
@@ -112,6 +112,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   const data = await res.json().catch(() => null);
+  // A saved session can outlive its user (e.g. the database was re-seeded).
+  // Signing out sends the app back to the sign-in screen.
+  if (res.status === 401 && user) clearUser();
   if (!res.ok) {
     throw new ApiError(data?.error ?? 'Something went wrong. Please try again.', res.status, data?.code);
   }

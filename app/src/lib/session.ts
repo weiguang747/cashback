@@ -1,10 +1,42 @@
+import * as SecureStore from 'expo-secure-store';
 import { useSyncExternalStore } from 'react';
+import { Platform } from 'react-native';
 
 import type { User } from './api';
 
-// The signed-in user, held in memory only: a full reload signs out.
-let current: User | null = null;
+// The signed-in user, kept in SecureStore (Keychain / Keystore) so reloads
+// and restarts stay signed in. Web has no SecureStore, so there it lives in
+// memory only.
+const STORAGE_KEY = 'session.user';
+const persisted = Platform.OS !== 'web';
+
+let current: User | null = restore();
 const listeners = new Set<() => void>();
+
+// Synchronous so the first render already knows who is signed in: no
+// loading state, and no flash of the sign-in screen.
+function restore(): User | null {
+  if (!persisted) return null;
+  try {
+    const raw = SecureStore.getItem(STORAGE_KEY);
+    const user = raw ? JSON.parse(raw) : null;
+    return isUser(user) ? user : null;
+  } catch {
+    return null;
+  }
+}
+
+function isUser(v: unknown): v is User {
+  const u = v as User | null;
+  return typeof u?.id === 'string' && typeof u.email === 'string' && typeof u.name === 'string';
+}
+
+function save(user: User | null) {
+  if (!persisted) return;
+  const write = user ? SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(user)) : SecureStore.deleteItemAsync(STORAGE_KEY);
+  // Losing the write only means signing in again next launch.
+  write.catch(() => {});
+}
 
 export function getUser(): User | null {
   return current;
@@ -12,6 +44,7 @@ export function getUser(): User | null {
 
 export function setUser(user: User | null) {
   current = user;
+  save(user);
   listeners.forEach((l) => l());
 }
 
