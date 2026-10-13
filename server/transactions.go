@@ -32,22 +32,62 @@ type store interface {
 	Redeem(ctx context.Context, p database.RedeemParams) (database.RedeemResult, error)
 }
 
-// pgStore is the real store: the sqlc queries plus Pay, which needs its
-// own database transaction.
+// pgStore is the real store: the sqlc queries plus Pay and Redeem, which
+// need their own database transactions.
 type pgStore struct {
 	*db.Queries
 	pool *pgxpool.Pool
+	// money limits how many Pay and Redeem transactions hold a pool
+	// connection at once. Awarding payments queue on the campaign row lock;
+	// without a limit they hold every connection while they wait, and reads
+	// like /v1/accounts wait behind them. Extra ones wait here instead,
+	// without a connection.
+	money slots
 }
 
-func newPgStore(pool *pgxpool.Pool) pgStore { return pgStore{Queries: db.New(pool), pool: pool} }
+func newPgStore(pool *pgxpool.Pool) pgStore {
+	return pgStore{Queries: db.New(pool), pool: pool, money: newSlots(moneySlots(pool.Config().MaxConns))}
+}
+
+// moneySlots leaves at least half the pool to everything else.
+func moneySlots(maxConns int32) int {
+	return max(1, int(maxConns)/2)
+}
 
 func (s pgStore) Pay(ctx context.Context, p database.PayParams) (database.PayResult, error) {
+	if err := s.money.acquire(ctx); err != nil {
+		return database.PayResult{}, err
+	}
+	defer s.money.release()
 	return database.Pay(ctx, s.pool, p)
 }
 
 func (s pgStore) Redeem(ctx context.Context, p database.RedeemParams) (database.RedeemResult, error) {
+	if err := s.money.acquire(ctx); err != nil {
+		return database.RedeemResult{}, err
+	}
+	defer s.money.release()
 	return database.Redeem(ctx, s.pool, p)
 }
+
+// slots is a counting semaphore whose wait ends with the request.
+type slots chan struct{}
+
+func newSlots(n int) slots { return make(slots, n) }
+
+// acquire waits for a free slot, or returns the context's error if the
+// request times out or the client leaves first (nothing has run yet, so
+// the handler's usual timeout and cancel handling applies).
+func (s slots) acquire(ctx context.Context) error {
+	select {
+	case s <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for a database slot: %w", ctx.Err())
+	}
+}
+
+func (s slots) release() { <-s }
 
 type transaction struct {
 	ID          string      `json:"id"`

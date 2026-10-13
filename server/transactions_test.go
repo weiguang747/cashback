@@ -192,3 +192,38 @@ type failingTransactions struct {
 func (f failingTransactions) ListTransactions(_ context.Context, _ db.ListTransactionsParams) ([]db.ListTransactionsRow, error) {
 	return nil, f.err
 }
+
+func TestSlots(t *testing.T) {
+	s := newSlots(2)
+	ctx := context.Background()
+	if err := s.acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Full: the wait ends with the request's deadline, as a deadline error,
+	// so the handler answers 503 "timeout".
+	short, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancel()
+	if err := s.acquire(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("acquire when full = %v, want DeadlineExceeded", err)
+	}
+
+	s.release()
+	if err := s.acquire(ctx); err != nil {
+		t.Errorf("acquire after release = %v", err)
+	}
+}
+
+func TestMoneySlotsLeaveHalfThePool(t *testing.T) {
+	for _, tt := range []struct {
+		maxConns int32
+		want     int
+	}{{20, 10}, {4, 2}, {3, 1}, {1, 1}} {
+		if got := moneySlots(tt.maxConns); got != tt.want {
+			t.Errorf("moneySlots(%d) = %d, want %d", tt.maxConns, got, tt.want)
+		}
+	}
+}

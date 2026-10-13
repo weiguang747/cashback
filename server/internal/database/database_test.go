@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,6 +79,27 @@ func insert(t *testing.T, q *db.Queries, p db.InsertTransactionParams) {
 	}
 	if _, err := q.InsertTransaction(context.Background(), p); err != nil {
 		t.Fatalf("insert %+v: %v", p, err)
+	}
+}
+
+func TestOpenPoolSize(t *testing.T) {
+	pool := openTestDB(t)
+	if got := pool.Config().MaxConns; got != DefaultMaxConns {
+		t.Errorf("MaxConns = %d, want the default %d", got, DefaultMaxConns)
+	}
+
+	// pool_max_conns in the URL wins.
+	sep := "?"
+	if strings.Contains(os.Getenv("TEST_DATABASE_URL"), "?") {
+		sep = "&"
+	}
+	small, err := Open(context.Background(), os.Getenv("TEST_DATABASE_URL")+sep+"pool_max_conns=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	if got := small.Config().MaxConns; got != 3 {
+		t.Errorf("MaxConns with pool_max_conns=3 = %d, want 3", got)
 	}
 }
 

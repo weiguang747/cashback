@@ -4,6 +4,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -12,11 +13,24 @@ import (
 	"cashback/server/migrations"
 )
 
-// Open connects to the database at url and applies any pending migrations.
-func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, url)
+// DefaultMaxConns is the pool size unless DATABASE_URL sets pool_max_conns.
+// pgx's own default is the CPU count, which is 2-4 in a small container:
+// too few once payments queue on a campaign lock. Keep it well under the
+// server's max_connections (100 by default) times the number of instances.
+const DefaultMaxConns = 20
+
+// Open connects to the database at rawURL and applies any pending migrations.
+func Open(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
+	}
+	if u, err := url.Parse(rawURL); err != nil || !u.Query().Has("pool_max_conns") {
+		cfg.MaxConns = DefaultMaxConns
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
