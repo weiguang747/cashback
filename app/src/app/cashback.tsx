@@ -81,7 +81,9 @@ export default function CashbackScreen() {
               </View>
             )
           ) : (
-            <EmptyState icon="percent" title="No cash back yet" message={howToEarn} />
+            <View style={styles.empty}>
+              <EmptyState icon="percent" title="No cash back yet" message={howToEarn} />
+            </View>
           )
         }
       />
@@ -103,4 +105,5 @@ const styles = StyleSheet.create({
   redeem: { alignSelf: 'center' },
   sectionHeader: { marginTop: spacing.xl, marginBottom: spacing.xs },
   status: { alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xxxl },
+  empty: { paddingTop: spacing.xxxl },
 });
