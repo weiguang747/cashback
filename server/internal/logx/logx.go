@@ -8,6 +8,7 @@ package logx
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"regexp"
@@ -110,6 +111,17 @@ func Err(err error) slog.Attr {
 		return slog.String("error", "")
 	}
 	return slog.String("error", Scrub(err.Error()))
+}
+
+// Library adapts a dependency's printf-style logger (e.g. go-redis's
+// redis.SetLogger) so its output is JSON and redacted like everything else,
+// instead of plain lines from the standard log package.
+type Library struct{ Name string }
+
+// Printf logs one library message at warn: libraries log only problems
+// (failed dials, pool errors), never routine events.
+func (l Library) Printf(ctx context.Context, format string, v ...any) {
+	From(ctx).Warn("library log", "library", l.Name, "detail", Scrub(fmt.Sprintf(format, v...)))
 }
 
 type ctxKey struct{}

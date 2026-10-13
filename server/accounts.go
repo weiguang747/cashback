@@ -6,7 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"cashback/server/internal/httpx"
-	"cashback/server/internal/logx"
 	"cashback/server/internal/money"
 )
 
@@ -25,8 +24,7 @@ func listAccounts(s store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows, err := s.ListAccounts(c.Request.Context(), currentUser(c).ID)
 		if err != nil {
-			logx.From(c.Request.Context()).Error("list accounts failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "list accounts failed", err)
 			return
 		}
 

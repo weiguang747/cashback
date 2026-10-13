@@ -127,8 +127,9 @@ export async function redeemCashback(amount: Money, idempotencyKey: string): Pro
 }
 
 /**
- * A failed request. `status` is 0 when the server couldn't be reached, and
- * `code` is the server's machine-readable reason, e.g. "insufficient_funds".
+ * A failed request. `status` is 0 when the server couldn't be reached (then
+ * `code` is "timeout" if it stopped responding), otherwise `code` is the
+ * server's machine-readable reason, e.g. "insufficient_funds".
  * `requestId` finds the request in the server logs.
  */
 export class ApiError extends Error {
@@ -158,32 +159,63 @@ function post<T>(path: string, body: unknown, headers: Record<string, string> = 
   });
 }
 
+/**
+ * How long to wait for a response. Without a limit a stalled server leaves
+ * "Processing…" on screen indefinitely. A timed-out payment may still
+ * complete on the server, so callers treat `timeout` as an unknown outcome
+ * and retry with the same Idempotency-Key.
+ */
+const TIMEOUT_MS = 15_000;
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   // Demo stand-in for auth: the server trusts this header (see requireUser).
   const user = getUser();
   const headers = new Headers(init.headers);
   if (user) headers.set('X-User-ID', user.id);
 
+  // One signal for both the caller's cancel (e.g. leaving a screen) and the timeout.
+  const caller = init.signal;
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  if (caller?.aborted) cancel();
+  caller?.addEventListener('abort', cancel);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    cancel();
+  }, TIMEOUT_MS);
+
   const method = init.method ?? 'GET';
   let res: Response;
+  let data: unknown;
   try {
-    res = await fetch(`${API_URL}${path}`, { ...init, headers });
+    res = await fetch(`${API_URL}${path}`, { ...init, headers, signal: controller.signal });
+    // A body that isn't JSON is fine (the status still counts); an abort while reading it isn't.
+    data = await res.json().catch((e: unknown) => {
+      if (controller.signal.aborted) throw e;
+      return null;
+    });
   } catch (e) {
-    if (e instanceof Error && e.name === 'AbortError') throw e;
-    const err = new ApiError("Can't reach the server. Check your connection and try again.", 0);
+    if (!timedOut && e instanceof Error && e.name === 'AbortError') throw e;
+    const err = timedOut
+      ? new ApiError('The server took too long to respond. Please try again.', 0, 'timeout')
+      : new ApiError("Can't reach the server. Check your connection and try again.", 0);
     logFailure(method, path, err);
     throw err;
+  } finally {
+    clearTimeout(timer);
+    caller?.removeEventListener('abort', cancel);
   }
 
-  const data = await res.json().catch(() => null);
   // A saved session can outlive its user (e.g. the database was re-seeded).
   // Signing out sends the app back to the sign-in screen.
   if (res.status === 401 && user) clearUser();
   if (!res.ok) {
+    const body = data as { error?: string; code?: string } | null;
     const err = new ApiError(
-      data?.error ?? 'Something went wrong. Please try again.',
+      body?.error ?? 'Something went wrong. Please try again.',
       res.status,
-      data?.code,
+      body?.code,
       res.headers.get('X-Request-ID') ?? undefined,
     );
     logFailure(method, path, err);

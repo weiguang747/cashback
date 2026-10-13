@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -134,4 +136,66 @@ func TestPanicIsLoggedWithRequestID(t *testing.T) {
 	if strings.Contains(out, "hunter2") {
 		t.Errorf("panic log leaked a password:\n%s", out)
 	}
+}
+
+// A client that disconnects (e.g. the app's timeout) makes in-flight database
+// and Redis calls fail with context.Canceled. That isn't a server fault: it
+// must not log at error, look like a Redis outage, or count as a 500.
+func TestClientCancelIsNotAServerError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	canceled := func(path, body string) *http.Request {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", andiID)
+		req.Header.Set("Idempotency-Key", "key-00000001")
+		return req
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*fakeStore, *fakeIdem)
+		msg   string
+	}{
+		{"payment fails mid-flight", func(s *fakeStore, _ *fakeIdem) { s.payErr = context.Canceled },
+			"request failed; idempotency key released for retry"},
+		{"idempotency lock fails", func(_ *fakeStore, i *fakeIdem) { i.err = context.Canceled },
+			"idempotency lock abandoned"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureLogs(t)
+			s, idem := demoStore(0), newFakeIdem()
+			tt.setup(&s, idem)
+			w := httptest.NewRecorder()
+			setupRouter(s, idem).ServeHTTP(w, canceled("/v1/payments", kopi))
+
+			if w.Code != httpx.StatusClientClosedRequest {
+				t.Errorf("status = %d, want %d", w.Code, httpx.StatusClientClosedRequest)
+			}
+			out := logs.String()
+			if strings.Contains(out, `"level":"ERROR"`) || strings.Contains(out, "unavailable") {
+				t.Errorf("client cancel logged as a server error:\n%s", out)
+			}
+			for _, want := range []string{`"msg":"` + tt.msg + `"`, `"client_canceled":true`, `"status":499`} {
+				if !strings.Contains(out, want) {
+					t.Errorf("logs missing %s:\n%s", want, out)
+				}
+			}
+			if _, locked := idem.records[andiID+":key-00000001"]; locked {
+				t.Error("idempotency key still locked; a retry would get in_progress")
+			}
+		})
+	}
+
+	t.Run("real failure is still an error", func(t *testing.T) {
+		logs := captureLogs(t)
+		s := demoStore(0)
+		s.payErr = errors.New("connection reset")
+		w := pay(testRouter(s), andiID, "key-00000001", kopi)
+		if w.Code != http.StatusInternalServerError || !strings.Contains(logs.String(), `"level":"ERROR"`) {
+			t.Errorf("got %d, want 500 logged at error:\n%s", w.Code, logs)
+		}
+	})
 }

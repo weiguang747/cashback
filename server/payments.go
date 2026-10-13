@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -70,8 +72,13 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 		}
 		req.MerchantID = strings.TrimSpace(req.MerchantID)
 		req.MerchantName = strings.TrimSpace(req.MerchantName)
-		if req.MerchantID == "" || req.MerchantName == "" || len(req.MerchantID) > maxMerchantLen || len(req.MerchantName) > maxMerchantLen {
-			httpx.Error(c, http.StatusBadRequest, "merchant is required")
+		if req.MerchantID == "" || req.MerchantName == "" {
+			httpx.ErrorCode(c, http.StatusBadRequest, "invalid_merchant", "merchant is required")
+			return
+		}
+		if utf8.RuneCountInString(req.MerchantID) > maxMerchantLen || utf8.RuneCountInString(req.MerchantName) > maxMerchantLen {
+			httpx.ErrorCode(c, http.StatusBadRequest, "invalid_merchant",
+				fmt.Sprintf("merchant id and name must be at most %d characters", maxMerchantLen))
 			return
 		}
 
@@ -81,8 +88,7 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			logx.From(c.Request.Context()).Error("get main account failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "get main account failed", err)
 			return
 		}
 		amount, err := money.Parse(req.Amount.Value, int(account.MinorUnit))

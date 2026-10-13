@@ -120,7 +120,8 @@ Headers: `X-User-ID`, `Idempotency-Key`.
 |---|---|---|
 | 400 | `invalid_idempotency_key` | Header missing or not 8–128 of `[A-Za-z0-9_-]` |
 | 400 | `invalid_amount` | Not a positive decimal, too many decimals, or overflow |
-| 400 | – | Missing merchant, malformed body |
+| 400 | `invalid_merchant` | Merchant id or name missing, or longer than 100 characters |
+| 400 | – | Malformed body |
 | 409 | `in_progress` | Same key is still being processed |
 | 422 | `insufficient_funds` | Balance too low |
 | 422 | `unsupported_currency` | User has no account in that currency |

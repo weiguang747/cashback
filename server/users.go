@@ -48,8 +48,7 @@ func requireUser(s store) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			logx.From(ctx).Error("get user failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "get user failed", err)
 			return
 		}
 

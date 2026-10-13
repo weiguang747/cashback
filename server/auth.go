@@ -47,8 +47,7 @@ func signIn(s store) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			logx.From(ctx).Error("get user by email failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "get user by email failed", err)
 			return
 		}
 		logx.From(ctx).Info("signed in", "user_id", row.ID)

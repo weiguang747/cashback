@@ -2,6 +2,7 @@ package logx
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -65,6 +66,26 @@ func TestLoggerRedacts(t *testing.T) {
 		`"X-User-ID":"[REDACTED]"`, `"authorization":"[REDACTED]"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log missing %s:\n%s", want, out)
+		}
+	}
+}
+
+// Library messages become JSON records through the default logger, scrubbed.
+func TestLibrary(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(New(&buf, slog.LevelInfo))
+	defer slog.SetDefault(prev)
+
+	Library{Name: "redis"}.Printf(context.Background(), "dial %s: %v", "redis://:hunter2@redis:6379/0", errors.New("refused"))
+	out := buf.String()
+
+	if strings.Contains(out, "hunter2") {
+		t.Errorf("library log leaked the password:\n%s", out)
+	}
+	for _, want := range []string{`"level":"WARN"`, `"library":"redis"`, `"detail":"dial redis://:[REDACTED]@redis:6379/0: refused"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("library log missing %s:\n%s", want, out)
 		}
 	}
 }

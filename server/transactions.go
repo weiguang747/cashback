@@ -12,7 +12,6 @@ import (
 	"cashback/server/internal/database"
 	"cashback/server/internal/db"
 	"cashback/server/internal/httpx"
-	"cashback/server/internal/logx"
 	"cashback/server/internal/money"
 )
 
@@ -80,8 +79,7 @@ func listTransactions(s store) gin.HandlerFunc {
 
 		rows, err := s.ListTransactions(c.Request.Context(), db.ListTransactionsParams{UserID: currentUser(c).ID, Limit: limit})
 		if err != nil {
-			logx.From(c.Request.Context()).Error("list transactions failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "list transactions failed", err)
 			return
 		}
 

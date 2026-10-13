@@ -7,6 +7,7 @@ import { CashbackBanner } from '@/features/cashback/CashbackBanner';
 import { BalanceCard } from '@/features/wallet/BalanceCard';
 import { useAccounts } from '@/lib/accounts';
 import { useCampaign } from '@/lib/cashback';
+import { greeting } from '@/lib/locale';
 import { clearUser, useUser } from '@/lib/session';
 import { dayLabel, timeLabel, useTransactions } from '@/lib/transactions';
 import { colors, radii, spacing } from '@/theme';
@@ -58,7 +59,7 @@ export default function HomeScreen() {
             </Tile>
             <View style={styles.greeting}>
               <Text variant="caption" color="textMuted">
-                Good morning
+                {greeting()}
               </Text>
               <Text variant="headline">{name}</Text>
             </View>

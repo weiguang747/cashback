@@ -11,7 +11,6 @@ import (
 
 	"cashback/server/internal/db"
 	"cashback/server/internal/httpx"
-	"cashback/server/internal/logx"
 	"cashback/server/internal/money"
 )
 
@@ -54,8 +53,7 @@ func getCampaign(s store) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			logx.From(c.Request.Context()).Error("get campaign failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "get campaign failed", err)
 			return
 		}
 
@@ -111,14 +109,12 @@ func listCashbackHistory(s store) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			logx.From(c.Request.Context()).Error("get cash back account failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "get cash back account failed", err)
 			return
 		}
 		rows, err := s.ListCashbackTransactions(ctx, db.ListCashbackTransactionsParams{UserID: user.ID, Currency: cur, Limit: limit})
 		if err != nil {
-			logx.From(c.Request.Context()).Error("list cash back transactions failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "list cash back transactions failed", err)
 			return
 		}
 

@@ -33,3 +33,14 @@ AppState.addEventListener('change', (state) => {
 export function deviceLocale(): DeviceLocale {
   return current;
 }
+
+/**
+ * "Good morning", "Good afternoon" or "Good evening" for the device's local
+ * time. Display only, so the device clock is fine here (unlike cash back limits).
+ */
+export function greeting(now: Date = new Date()): string {
+  const hour = now.getHours();
+  if (hour >= 5 && hour < 12) return 'Good morning';
+  if (hour >= 12 && hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}

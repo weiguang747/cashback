@@ -21,6 +21,8 @@ func main() {
 	// JSON logs on stdout, redacted (see internal/logx). LOG_LEVEL=debug for more.
 	logger := logx.New(os.Stdout, logx.ParseLevel(os.Getenv("LOG_LEVEL")))
 	slog.SetDefault(logger)
+	// go-redis logs dial and pool errors itself; route them through slog too.
+	redis.SetLogger(logx.Library{Name: "redis"})
 	// Gin's own debug output (route list, warnings) isn't structured.
 	if os.Getenv(gin.EnvGinMode) == "" {
 		gin.SetMode(gin.ReleaseMode)

@@ -109,7 +109,7 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 ## API conventions
 
 - **Errors** are always JSON `{"error": "message", "code": "machine_code"}`. `code` is optional; the app branches on it (e.g. `insufficient_funds`). Router-level 404/405/panics go through `httpx` too, so they follow the same shape.
-- **No internal details in error responses.** Log the error with `log.Printf` and return `something went wrong`.
+- **No internal details in error responses.** For unexpected errors call `httpx.InternalError(c, msg, err)`: it logs the error and returns `something went wrong`. If the client already disconnected (the app gives up after 15 s), the failure is just the cancellation, so it logs at info with `client_canceled` and records status 499 instead of an error and a 500.
 - **Lists are newest first.** An optional `limit` must be a positive int32; NULL means no limit.
 - **Versioning:** `/v1` may change while the app is unreleased. After release, breaking changes go in `/v2`.
 
@@ -118,7 +118,7 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 - **Format:** JSON lines on stdout via `log/slog`, set up in `main.go` (`LOG_LEVEL`: debug, info, warn, error).
 - **Getting a logger:** in a handler, `logx.From(c.Request.Context())`. It carries `request_id` and, after `requireUser`, `user_id`; money endpoints add `idempotency_key`. Errors go in as `logx.Err(err)`. Don't use the `log` package or `fmt.Print` in the server.
 - **Request ids:** `RequestLogger` writes one access line per request (method, route template, status, duration, response size, client IP truncated to /24 or /48). It accepts the client's `X-Request-ID` when it's well-formed, otherwise generates one, and always returns it, so an error a user reports can be found. The app keeps it on `ApiError.requestId`.
-- **Events logged:** sign-in outcomes, auth rejections (reason only), `payment completed` / `payment declined` (transaction, merchant id, amount, cash back and reason), `campaign ended: budget used up`, `redemption completed` / `declined`, every idempotency decision (Redis replay, in-progress, key reused, database-backstop replay at **warn**, Redis unavailable at **error**), and panics with stack traces. When adding a money-moving endpoint, log its outcome the same way.
+- **Events logged:** sign-in outcomes, auth rejections (reason only), `payment completed` / `payment declined` (transaction, merchant id, amount, cash back and reason), `campaign ended: budget used up`, `redemption completed` / `declined`, every idempotency decision (Redis replay, in-progress, key reused, database-backstop replay at **warn**, Redis unavailable at **error**), panics with stack traces, and go-redis's own messages (as `library log`, via `logx.Library`). When adding a money-moving endpoint, log its outcome the same way.
 - **Never log:**
   - request or response bodies, or headers
   - balances

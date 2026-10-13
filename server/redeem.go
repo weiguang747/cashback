@@ -60,8 +60,7 @@ func redeemCashback(s store, idem idempotency.Store) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			logx.From(c.Request.Context()).Error("get cash back account failed", logx.Err(err))
-			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+			httpx.InternalError(c, "get cash back account failed", err)
 			return
 		}
 		amount, err := money.Parse(req.Amount.Value, int(account.MinorUnit))

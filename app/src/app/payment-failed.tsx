@@ -4,9 +4,20 @@ import { StyleSheet, View } from 'react-native';
 import { Amount, Button, Notice, ResultHero, Screen } from '@/components';
 import { colors, spacing } from '@/theme';
 
-const messages = {
-  insufficient: "You don't have enough balance for this payment. Please enter a smaller amount.",
-  error: "We couldn't process your payment right now. Please check your connection and try again.",
+// `insufficient` is a definite decline. `error` covers unknown outcomes
+// (timeouts, lost connections, server errors): the payment may have gone
+// through, so the screen must not promise that no money moved.
+const copy = {
+  insufficient: {
+    title: 'Payment failed',
+    message: "You don't have enough balance for this payment. Please enter a smaller amount.",
+    notice: 'No money has left your account.',
+  },
+  error: {
+    title: 'Payment not confirmed',
+    message: "We couldn't confirm your payment. Please check your connection and try again.",
+    notice: 'If this payment went through, trying again won’t charge you twice.',
+  },
 } as const;
 
 export default function PaymentFailedScreen() {
@@ -20,23 +31,25 @@ export default function PaymentFailedScreen() {
     amount?: string;
     currency?: string;
     merchantId?: string;
-    reason?: keyof typeof messages;
+    reason?: keyof typeof copy;
     /** Idempotency-Key to reuse when the outcome is unknown. */
     key?: string;
   }>();
+  const declined = reason === 'insufficient';
+  const text = declined ? copy.insufficient : copy.error;
 
   return (
     <Screen>
       <ResultHero
         status="error"
-        title="Payment failed"
-        figure={<Amount money={{ value: amount, currency }} size="md" color={colors.textMuted} strikethrough />}
-        message={messages[reason ?? 'error'] ?? messages.error}
+        title={text.title}
+        figure={<Amount money={{ value: amount, currency }} size="md" color={colors.textMuted} strikethrough={declined} />}
+        message={text.message}
       />
 
       <View style={styles.bottom}>
         <Notice icon="shield" variant="surface" iconColor={colors.positive}>
-          No money has left your account.
+          {text.notice}
         </Notice>
         <Button
           label="Try again"

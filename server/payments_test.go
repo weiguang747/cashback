@@ -153,7 +153,10 @@ func TestCreatePaymentValidation(t *testing.T) {
 		{"short idempotency key", andiID, "abc", kopi, http.StatusBadRequest, "invalid_idempotency_key"},
 		{"bad characters in key", andiID, "key with spaces", kopi, http.StatusBadRequest, "invalid_idempotency_key"},
 		{"malformed JSON", andiID, "key-00000001", `{"merchantId":`, http.StatusBadRequest, ""},
-		{"no merchant", andiID, "key-00000001", `{"amount":{"value":"1","currency":"IDR"}}`, http.StatusBadRequest, ""},
+		{"no merchant", andiID, "key-00000001", `{"amount":{"value":"1","currency":"IDR"}}`, http.StatusBadRequest, "invalid_merchant"},
+		{"blank merchant name", andiID, "key-00000001", `{"merchantId":"x","merchantName":"   ","amount":{"value":"1","currency":"IDR"}}`, http.StatusBadRequest, "invalid_merchant"},
+		{"merchant name too long", andiID, "key-00000001", `{"merchantId":"x","merchantName":"` + strings.Repeat("é", maxMerchantLen+1) + `","amount":{"value":"1","currency":"IDR"}}`, http.StatusBadRequest, "invalid_merchant"},
+		{"merchant name at the limit", andiID, "key-00000001", `{"merchantId":"x","merchantName":"` + strings.Repeat("é", maxMerchantLen) + `","amount":{"value":"1","currency":"IDR"}}`, http.StatusCreated, ""},
 		{"zero", andiID, "key-00000001", amount("0", "IDR"), http.StatusBadRequest, "invalid_amount"},
 		{"negative", andiID, "key-00000001", amount("-5", "IDR"), http.StatusBadRequest, "invalid_amount"},
 		{"too many decimals", andiID, "key-00000001", amount("1.234", "IDR"), http.StatusBadRequest, "invalid_amount"},
@@ -165,6 +168,9 @@ func TestCreatePaymentValidation(t *testing.T) {
 			w := pay(router, tt.user, tt.key, tt.body)
 			if w.Code != tt.wantCode {
 				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.wantCode, w.Body)
+			}
+			if w.Code < 400 {
+				return
 			}
 			if code := errorCode(t, w); code != tt.wantErrCode {
 				t.Errorf("code = %q, want %q", code, tt.wantErrCode)

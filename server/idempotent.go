@@ -46,6 +46,11 @@ func runIdempotent(c *gin.Context, idem idempotency.Store, key, fingerprint stri
 
 	begin, err := idem.Begin(ctx, scope, key, fingerprint)
 	if err != nil {
+		if httpx.ClientGone(c) {
+			// Not a Redis outage: the client left before the lock was taken.
+			httpx.InternalError(c, "idempotency lock abandoned", err)
+			return
+		}
 		// Fail closed: never move money without the duplicate guard.
 		log.Error("idempotency store unavailable; refusing request", logx.Err(err))
 		httpx.ErrorCode(c, http.StatusServiceUnavailable, "unavailable", "this is unavailable right now, please try again")
@@ -72,12 +77,13 @@ func runIdempotent(c *gin.Context, idem idempotency.Store, key, fingerprint stri
 
 	out, err := run()
 	if err != nil {
-		log.Error("request failed; idempotency key released for retry", logx.Err(err))
+		// Also right when the client canceled: the transaction rolled back, or
+		// (if the cancel raced COMMIT) the retry hits the database backstop.
 		if err := idem.Release(bg, scope, key); err != nil {
 			// The key stays locked until its pending TTL expires.
 			log.Error("idempotency release failed", logx.Err(err))
 		}
-		httpx.Error(c, http.StatusInternalServerError, "something went wrong")
+		httpx.InternalError(c, "request failed; idempotency key released for retry", err)
 		return
 	}
 
