@@ -327,7 +327,7 @@ sequenceDiagram
     App->>API: POST /v1/payments (Idempotency-Key: K)
     API->>Redis: SET NX idem:{user}:{K} {pending, fingerprint} EX 60s
     alt key new
-        API->>Postgres: BEGIN; debit; INSERT … idempotency_key=K; award; COMMIT
+        API->>Postgres: BEGIN → debit → INSERT … idempotency_key=K → award → COMMIT
         API->>Redis: SET idem:{user}:{K} {done, status, body} EX 24h
         API-->>App: 201
     else done, same fingerprint
