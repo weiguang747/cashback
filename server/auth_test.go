@@ -32,7 +32,7 @@ func TestSignIn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader(tt.body))
+			req := httptest.NewRequest(http.MethodPost, "/v1/auth/sign-in", strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
@@ -50,9 +50,6 @@ func TestSignIn(t *testing.T) {
 			}
 			if resp.User.Email != tt.wantEmail {
 				t.Errorf("email = %q, want %q", resp.User.Email, tt.wantEmail)
-			}
-			if len(resp.Token) != 64 {
-				t.Errorf("token length = %d, want 64", len(resp.Token))
 			}
 		})
 	}

@@ -20,7 +20,6 @@ export default function SignInScreen() {
     setLoading(true);
     setError(null);
     try {
-      // TODO: store the token once the server issues real ones.
       await api.signIn(email.trim());
       router.replace('/home');
     } catch (e) {

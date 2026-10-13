@@ -30,7 +30,7 @@ func TestListTransactions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/transactions"+tt.query, nil)
+			req := httptest.NewRequest(http.MethodGet, "/v1/transactions"+tt.query, nil)
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 

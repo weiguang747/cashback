@@ -5,11 +5,11 @@
 export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8080';
 
 export type User = { email: string };
-export type SignInResponse = { token: string; user: User };
+export type SignInResponse = { user: User };
 
 /** Signs in with an email. The server accepts any valid email for now. */
 export function signIn(email: string): Promise<SignInResponse> {
-  return post<SignInResponse>('/auth/sign-in', { email });
+  return post<SignInResponse>('/v1/auth/sign-in', { email });
 }
 
 export type TransactionKind = 'in' | 'out' | 'cashback';
@@ -29,7 +29,7 @@ export type Transaction = {
 /** Transactions, newest first. Pass `limit` to get only the most recent ones. */
 export async function getTransactions(opts: { limit?: number; signal?: AbortSignal } = {}): Promise<Transaction[]> {
   const query = opts.limit ? `?limit=${opts.limit}` : '';
-  const data = await request<{ transactions: Transaction[] }>(`/transactions${query}`, { signal: opts.signal });
+  const data = await request<{ transactions: Transaction[] }>(`/v1/transactions${query}`, { signal: opts.signal });
   return data.transactions;
 }
 

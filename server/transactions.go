@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"cashback/server/internal/httpx"
 )
 
 type transaction struct {
@@ -57,7 +59,7 @@ func listTransactions(c *gin.Context) {
 	if s := c.Query("limit"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
+			httpx.Error(c, http.StatusBadRequest, "limit must be a positive integer")
 			return
 		}
 		limit = n
