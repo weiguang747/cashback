@@ -21,7 +21,8 @@ export function Spinner({ size = 20, color }: { size?: number; color?: string })
   const style = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
 
   return (
-    <Animated.View style={style}>
+    // Fixed size, so it spins on its own centre even in a parent that stretches it.
+    <Animated.View style={[{ width: size, height: size }, style]}>
       <Icon name="spinner" size={size} color={color} strokeWidth={2.4} />
     </Animated.View>
   );

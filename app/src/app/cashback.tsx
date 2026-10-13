@@ -73,7 +73,7 @@ export default function CashbackScreen() {
                 <Text variant="bodySmall" color="textMuted" align="center">
                   {error}
                 </Text>
-                <Button label="Try again" variant="secondary" size="sm" block={false} onPress={reload} loading={loading} />
+                <Button label="Try again" variant="secondary" size="sm" block={false} onPress={reload} loading={loading} style={styles.retry} />
               </View>
             ) : (
               <View style={styles.status} accessibilityLabel="Loading cash back">
@@ -105,5 +105,6 @@ const styles = StyleSheet.create({
   redeem: { alignSelf: 'center' },
   sectionHeader: { marginTop: spacing.xl, marginBottom: spacing.xs },
   status: { alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xxxl },
+  retry: { alignSelf: 'center' },
   empty: { paddingTop: spacing.xxxl },
 });

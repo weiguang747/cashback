@@ -71,7 +71,7 @@ export default function RedeemScreen() {
               <Text variant="bodySmall" color="textMuted" align="center">
                 {error}
               </Text>
-              <Button label="Try again" variant="secondary" size="sm" block={false} onPress={reload} loading={loading} />
+              <Button label="Try again" variant="secondary" size="sm" block={false} onPress={reload} loading={loading} style={styles.retry} />
             </>
           ) : (
             <Spinner color={colors.textMuted} />
@@ -154,6 +154,7 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   failure: { marginBottom: spacing.md },
   status: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md },
+  retry: { alignSelf: 'center' },
   hero: {
     marginTop: spacing.xxxl,
     paddingVertical: spacing.xxl + 4,

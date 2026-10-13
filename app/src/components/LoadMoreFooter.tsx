@@ -21,7 +21,7 @@ export function LoadMoreFooter({ loading, error, onRetry }: LoadMoreFooterProps)
         <Text variant="caption" color="danger" align="center" accessibilityRole="alert">
           Couldn’t load more. {error}
         </Text>
-        <Button label="Try again" variant="secondary" size="sm" block={false} onPress={onRetry} />
+        <Button label="Try again" variant="secondary" size="sm" block={false} onPress={onRetry} style={styles.retry} />
       </View>
     );
   }
@@ -35,4 +35,5 @@ export function LoadMoreFooter({ loading, error, onRetry }: LoadMoreFooterProps)
 
 const styles = StyleSheet.create({
   wrap: { alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xl },
+  retry: { alignSelf: 'center' },
 });
