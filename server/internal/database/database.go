@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"cashback/server/internal/dbtrace"
 	"cashback/server/migrations"
 )
 
@@ -18,6 +20,10 @@ import (
 // too few once payments queue on a campaign lock. Keep it well under the
 // server's max_connections (100 by default) times the number of instances.
 const DefaultMaxConns = 20
+
+// SlowQuery is the duration from which a query is logged at warn, by name,
+// with the request's id (see internal/dbtrace).
+const SlowQuery = 100 * time.Millisecond
 
 // Open connects to the database at rawURL and applies any pending migrations.
 func Open(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
@@ -28,6 +34,8 @@ func Open(ctx context.Context, rawURL string) (*pgxpool.Pool, error) {
 	if u, err := url.Parse(rawURL); err != nil || !u.Query().Has("pool_max_conns") {
 		cfg.MaxConns = DefaultMaxConns
 	}
+	// Per-request database time for the access log, and slow-query logs.
+	cfg.ConnConfig.Tracer = dbtrace.Tracer{Slow: SlowQuery}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)

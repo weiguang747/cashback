@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"cashback/server/internal/dbtrace"
 	"cashback/server/internal/logx"
 )
 
@@ -28,7 +29,8 @@ var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
 // when the request finishes.
 //
 // It logs the route template (/v1/payments), not headers, bodies or query
-// strings, and only a truncated client IP.
+// strings, and only a truncated client IP. It also logs the request's
+// database totals (see internal/dbtrace).
 func RequestLogger(base *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -39,7 +41,8 @@ func RequestLogger(base *slog.Logger) gin.HandlerFunc {
 		c.Header(RequestIDHeader, id)
 
 		logger := base.With("request_id", id)
-		c.Request = c.Request.WithContext(logx.WithLogger(c.Request.Context(), logger))
+		ctx, db := dbtrace.WithStats(c.Request.Context())
+		c.Request = c.Request.WithContext(logx.WithLogger(ctx, logger))
 
 		c.Next()
 
@@ -65,6 +68,11 @@ func RequestLogger(base *slog.Logger) gin.HandlerFunc {
 			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 			slog.Int("response_bytes", c.Writer.Size()),
 			slog.String("client_ip", truncateIP(c.ClientIP())),
+			// Where the time went: running queries (row lock waits included)
+			// and waiting for a pool connection or a money-operation slot.
+			slog.Int64("db_queries", db.Queries()),
+			slog.Float64("db_ms", dbtrace.MS(db.QueryTime())),
+			slog.Float64("db_wait_ms", dbtrace.MS(db.WaitTime())),
 		)
 	}
 }

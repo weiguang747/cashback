@@ -12,6 +12,7 @@ import (
 
 	"cashback/server/internal/cashback"
 	"cashback/server/internal/db"
+	"cashback/server/internal/dbtrace"
 )
 
 var jakarta = time.FixedZone("WIB", 7*60*60)
@@ -422,4 +423,29 @@ func TestCashbackBelowMinimumWithoutCashbackAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantCashback(t, payAt(t, pool, u, 1_000_000, noon), 0, cashback.BelowMinimum)
+}
+
+// An awarding payment is six round trips: BEGIN, the debit, the payment
+// row, the campaign lock, the award, COMMIT. Every awarding payment queues
+// on the campaign lock, so a statement added here costs throughput.
+func TestPayRoundTrips(t *testing.T) {
+	pool := openTestDB(t)
+	launch(t, pool, launchParams(1_000_000_000))
+	u := payingUser(t, pool, 1_000_000_000)
+
+	ctx, stats := dbtrace.WithStats(context.Background())
+	r, err := Pay(ctx, pool, PayParams{
+		UserID: u.id, AccountID: u.main, Currency: "IDR", AmountMinor: 3_500_000,
+		MerchantName: "Kopi Senja", IdempotencyKey: fmt.Sprintf("trips-%d", time.Now().UnixNano()), Now: noon,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCashback(t, r, 175_000, cashback.Awarded)
+	if n := stats.Queries(); n != 6 {
+		t.Errorf("awarding payment ran %d queries, want 6", n)
+	}
+	if stats.QueryTime() <= 0 || stats.WaitTime() <= 0 {
+		t.Errorf("stats = %v query, %v wait; want both measured", stats.QueryTime(), stats.WaitTime())
+	}
 }

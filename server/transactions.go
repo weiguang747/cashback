@@ -13,6 +13,7 @@ import (
 
 	"cashback/server/internal/database"
 	"cashback/server/internal/db"
+	"cashback/server/internal/dbtrace"
 	"cashback/server/internal/httpx"
 	"cashback/server/internal/money"
 )
@@ -79,6 +80,8 @@ func newSlots(n int) slots { return make(slots, n) }
 // request times out or the client leaves first (nothing has run yet, so
 // the handler's usual timeout and cancel handling applies).
 func (s slots) acquire(ctx context.Context) error {
+	start := time.Now()
+	defer func() { dbtrace.AddWait(ctx, time.Since(start)) }()
 	select {
 	case s <- struct{}{}:
 		return nil

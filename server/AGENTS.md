@@ -46,6 +46,7 @@ Run `gofmt`, `go vet`, `go tool sqlc diff` and the full test suite (with both `T
 | `internal/idempotency` | Redis-backed `Store`: lock a key, cache the response, replay |
 | `internal/httpx` | JSON error shape, request logging (`RequestLogger`, `AddToLogger`) and panic recovery |
 | `internal/logx` | Structured logging: JSON `slog` with central redaction, per-request logger (`logx.From(ctx)`) |
+| `internal/dbtrace` | pgx tracer: per-request database totals for the access log, slow-query logs by sqlc name |
 | `migrations/` | goose SQL, embedded via `migrations.go` |
 | `queries/` | sqlc input |
 | `cmd/seed` | Demo data. Never put demo rows in a migration. |
@@ -124,7 +125,8 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 
 - **Format:** JSON lines on stdout via `log/slog`, set up in `main.go` (`LOG_LEVEL`: debug, info, warn, error).
 - **Getting a logger:** in a handler, `logx.From(c.Request.Context())`. It carries `request_id` and, after `requireUser`, `user_id`; money endpoints add `idempotency_key`. Errors go in as `logx.Err(err)`. Don't use the `log` package or `fmt.Print` in the server.
-- **Request ids:** `RequestLogger` writes one access line per request (method, route template, status, duration, response size, client IP truncated to /24 or /48). It accepts the client's `X-Request-ID` when it's well-formed, otherwise generates one, and always returns it, so an error a user reports can be found. The app keeps it on `ApiError.requestId`.
+- **Request ids:** `RequestLogger` writes one access line per request (method, route template, status, duration, response size, client IP truncated to /24 or /48, and database totals: see below). It accepts the client's `X-Request-ID` when it's well-formed, otherwise generates one, and always returns it, so an error a user reports can be found. The app keeps it on `ApiError.requestId`.
+- **Database time** (`internal/dbtrace`, set as the pool's tracer in `database.Open`): each access line has `db_queries`, `db_ms` (running queries, including waits on row locks such as the campaign's) and `db_wait_ms` (waiting for a pool connection or a money-operation slot). `duration_ms` far above both means time in Go, Redis or the network. Queries taking `database.SlowQuery` (100 ms) or more are logged at **warn** as `slow query` with the sqlc name (`"query":"LockActiveCampaign"`), the request id and `failed`; at `LOG_LEVEL=debug` every query is logged that way. Queries are named, never logged as SQL text or arguments. `TestPayRoundTrips` pins an awarding payment at 6 queries.
 - **Events logged:** sign-in outcomes, auth rejections (reason only), `payment completed` / `payment declined` (transaction, merchant id, amount, cash back and reason), `campaign ended: budget used up`, `redemption completed` / `declined`, every idempotency decision (Redis replay, in-progress, key reused, database-backstop replay at **warn**, Redis unavailable at **error**), panics with stack traces, and go-redis's own messages (as `library log`, via `logx.Library`). When adding a money-moving endpoint, log its outcome the same way.
 - **Never log:**
   - request or response bodies, or headers

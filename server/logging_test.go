@@ -46,6 +46,12 @@ func TestRequestIDs(t *testing.T) {
 	if !strings.Contains(logs.String(), `"request_id":"app-req-12345"`) || !strings.Contains(logs.String(), `"user_id":"`+andiID+`"`) {
 		t.Errorf("access log missing request_id or user_id:\n%s", logs)
 	}
+	// Database totals (zero here: the fake store doesn't use Postgres).
+	for _, field := range []string{`"db_queries":0`, `"db_ms":0`, `"db_wait_ms":0`} {
+		if !strings.Contains(logs.String(), field) {
+			t.Errorf("access log missing %s:\n%s", field, logs)
+		}
+	}
 
 	// A missing or unsafe one is replaced with a generated id.
 	for _, incoming := range []string{"", "bad id with spaces", strings.Repeat("x", 100)} {
