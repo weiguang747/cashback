@@ -2,7 +2,6 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { Amount, Button, Notice, ResultHero, Screen } from '@/components';
-import { idr } from '@/lib/format';
 import { colors, spacing } from '@/theme';
 
 const messages = {
@@ -11,10 +10,19 @@ const messages = {
 } as const;
 
 export default function PaymentFailedScreen() {
-  const { amount = '0', merchantId, reason } = useLocalSearchParams<{
+  const {
+    amount = '0',
+    currency = 'IDR',
+    merchantId,
+    reason,
+    key,
+  } = useLocalSearchParams<{
     amount?: string;
+    currency?: string;
     merchantId?: string;
     reason?: keyof typeof messages;
+    /** Idempotency-Key to reuse when the outcome is unknown. */
+    key?: string;
   }>();
 
   return (
@@ -22,7 +30,7 @@ export default function PaymentFailedScreen() {
       <ResultHero
         status="error"
         title="Payment failed"
-        figure={<Amount money={idr(amount)} size="md" color={colors.textMuted} strikethrough />}
+        figure={<Amount money={{ value: amount, currency }} size="md" color={colors.textMuted} strikethrough />}
         message={messages[reason ?? 'error'] ?? messages.error}
       />
 
@@ -33,7 +41,7 @@ export default function PaymentFailedScreen() {
         <Button
           label="Try again"
           style={styles.cta}
-          onPress={() => router.replace({ pathname: '/pay', params: { merchantId, amount } })}
+          onPress={() => router.replace({ pathname: '/pay', params: { merchantId, amount, ...(key ? { key } : {}) } })}
         />
         <Button label="Back to home" variant="secondary" onPress={() => router.dismissTo('/home')} />
       </View>

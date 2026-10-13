@@ -57,10 +57,42 @@ export async function getAccounts(opts: { signal?: AbortSignal } = {}): Promise<
   return data.accounts;
 }
 
-function post<T>(path: string, body: unknown): Promise<T> {
+export type PaymentInput = { merchantId: string; merchantName: string; amount: Money };
+export type Payment = {
+  transaction: Transaction;
+  /** Main account balance after the payment. */
+  balance: Money;
+};
+
+/**
+ * Pays a merchant from the main account. `idempotencyKey` must be a fresh
+ * UUID per payment, reused when retrying it: the server then returns the
+ * first result instead of charging again.
+ */
+export async function createPayment(input: PaymentInput, idempotencyKey: string): Promise<Payment> {
+  const data = await post<{ payment: Payment }>('/v1/payments', input, { 'Idempotency-Key': idempotencyKey });
+  return data.payment;
+}
+
+/**
+ * A failed request. `status` is 0 when the server couldn't be reached, and
+ * `code` is the server's machine-readable reason, e.g. "insufficient_funds".
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+function post<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
   return request<T>(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
 }
@@ -76,12 +108,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     res = await fetch(`${API_URL}${path}`, { ...init, headers });
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') throw e;
-    throw new Error("Can't reach the server. Check your connection and try again.");
+    throw new ApiError("Can't reach the server. Check your connection and try again.", 0);
   }
 
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error(data?.error ?? 'Something went wrong. Please try again.');
+    throw new ApiError(data?.error ?? 'Something went wrong. Please try again.', res.status, data?.code);
   }
   return data as T;
 }

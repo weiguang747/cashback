@@ -9,14 +9,21 @@ import (
 )
 
 // ErrorResponse is the body of every failed request: {"error": "..."}.
-// The app reads this field to show a message to the user.
+// The app reads Error to show a message to the user, and Code, when set,
+// to react to a specific failure such as "insufficient_funds".
 type ErrorResponse struct {
 	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
 }
 
 // Error aborts the request and writes a JSON error body.
 func Error(c *gin.Context, status int, message string) {
 	c.AbortWithStatusJSON(status, ErrorResponse{Error: message})
+}
+
+// ErrorCode is Error with a machine-readable code the app can branch on.
+func ErrorCode(c *gin.Context, status int, code, message string) {
+	c.AbortWithStatusJSON(status, ErrorResponse{Error: message, Code: code})
 }
 
 // UseJSONErrors makes the router's own failures (unknown route, wrong

@@ -29,6 +29,19 @@ export function timeLabel(date: Date): string {
   }).format(date);
 }
 
+/** "13 Oct 2026, 14:32" in the device locale, time zone and 12/24-hour setting. */
+export function dateTimeLabel(date: Date): string {
+  const { languageTag, uses24hourClock } = deviceLocale();
+  return new Intl.DateTimeFormat(languageTag, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: uses24hourClock === null ? undefined : !uses24hourClock,
+  }).format(date);
+}
+
 /** "today" / "yesterday" (or "hari ini" / "kemarin") for offset 0 / -1. */
 function relativeDay(locale: string, offset: number): string {
   if (typeof Intl.RelativeTimeFormat === 'function') {

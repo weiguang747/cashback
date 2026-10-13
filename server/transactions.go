@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"cashback/server/internal/database"
 	"cashback/server/internal/db"
 	"cashback/server/internal/httpx"
 	"cashback/server/internal/money"
@@ -21,6 +23,21 @@ type store interface {
 	GetUserByEmail(ctx context.Context, email string) (db.GetUserByEmailRow, error)
 	ListAccounts(ctx context.Context, userID string) ([]db.ListAccountsRow, error)
 	ListTransactions(ctx context.Context, arg db.ListTransactionsParams) ([]db.ListTransactionsRow, error)
+	GetMainAccount(ctx context.Context, arg db.GetMainAccountParams) (db.GetMainAccountRow, error)
+	Pay(ctx context.Context, p database.PayParams) (database.PayResult, error)
+}
+
+// pgStore is the real store: the sqlc queries plus Pay, which needs its
+// own database transaction.
+type pgStore struct {
+	*db.Queries
+	pool *pgxpool.Pool
+}
+
+func newPgStore(pool *pgxpool.Pool) pgStore { return pgStore{Queries: db.New(pool), pool: pool} }
+
+func (s pgStore) Pay(ctx context.Context, p database.PayParams) (database.PayResult, error) {
+	return database.Pay(ctx, s.pool, p)
 }
 
 type transaction struct {
@@ -60,16 +77,20 @@ func listTransactions(s store) gin.HandlerFunc {
 
 		txns := make([]transaction, 0, len(rows))
 		for _, r := range rows {
-			txns = append(txns, transaction{
-				ID:          r.ID,
-				Name:        r.Name,
-				Description: r.Description,
-				Amount:      money.Money{Minor: r.AmountMinor, Currency: r.Currency, Exponent: int(r.MinorUnit)},
-				Kind:        r.Kind,
-				// Always UTC on the wire; the app shows it in the device's time zone.
-				CreatedAt: r.CreatedAt.UTC(),
-			})
+			txns = append(txns, toTransaction(r))
 		}
 		c.JSON(http.StatusOK, transactionsResponse{Transactions: txns})
+	}
+}
+
+func toTransaction(r db.ListTransactionsRow) transaction {
+	return transaction{
+		ID:          r.ID,
+		Name:        r.Name,
+		Description: r.Description,
+		Amount:      money.Money{Minor: r.AmountMinor, Currency: r.Currency, Exponent: int(r.MinorUnit)},
+		Kind:        r.Kind,
+		// Always UTC on the wire; the app shows it in the device's time zone.
+		CreatedAt: r.CreatedAt.UTC(),
 	}
 }

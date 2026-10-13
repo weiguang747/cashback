@@ -10,20 +10,60 @@ import (
 	"time"
 )
 
-const insertTransaction = `-- name: InsertTransaction :one
-INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id
+const getTransactionByIdempotencyKey = `-- name: GetTransactionByIdempotencyKey :one
+SELECT t.id, t.name, t.description, t.kind, t.amount_minor, t.currency, c.minor_unit, t.created_at
+FROM transactions t
+JOIN currencies c ON c.code = t.currency
+WHERE t.account_id = $1 AND t.idempotency_key = $2
 `
 
-type InsertTransactionParams struct {
-	AccountID   string
+type GetTransactionByIdempotencyKeyParams struct {
+	AccountID      string
+	IdempotencyKey *string
+}
+
+type GetTransactionByIdempotencyKeyRow struct {
+	ID          string
 	Name        string
 	Description string
 	Kind        string
 	AmountMinor int64
 	Currency    string
+	MinorUnit   int16
 	CreatedAt   time.Time
+}
+
+func (q *Queries) GetTransactionByIdempotencyKey(ctx context.Context, arg GetTransactionByIdempotencyKeyParams) (GetTransactionByIdempotencyKeyRow, error) {
+	row := q.db.QueryRow(ctx, getTransactionByIdempotencyKey, arg.AccountID, arg.IdempotencyKey)
+	var i GetTransactionByIdempotencyKeyRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Kind,
+		&i.AmountMinor,
+		&i.Currency,
+		&i.MinorUnit,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertTransaction = `-- name: InsertTransaction :one
+INSERT INTO transactions (account_id, name, description, kind, amount_minor, currency, created_at, idempotency_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id
+`
+
+type InsertTransactionParams struct {
+	AccountID      string
+	Name           string
+	Description    string
+	Kind           string
+	AmountMinor    int64
+	Currency       string
+	CreatedAt      time.Time
+	IdempotencyKey *string
 }
 
 func (q *Queries) InsertTransaction(ctx context.Context, arg InsertTransactionParams) (string, error) {
@@ -35,6 +75,7 @@ func (q *Queries) InsertTransaction(ctx context.Context, arg InsertTransactionPa
 		arg.AmountMinor,
 		arg.Currency,
 		arg.CreatedAt,
+		arg.IdempotencyKey,
 	)
 	var id string
 	err := row.Scan(&id)

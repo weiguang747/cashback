@@ -16,7 +16,7 @@ import (
 // {"error": "..."} shape the app relies on.
 func TestErrorsAreJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter(demoStore(1))
+	router := testRouter(demoStore(1))
 
 	tests := []struct {
 		name, method, path, body string
@@ -50,7 +50,7 @@ func TestErrorsAreJSON(t *testing.T) {
 
 func TestPanicReturnsJSONError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter(fakeStore{})
+	router := testRouter(fakeStore{})
 	router.GET("/panic", func(c *gin.Context) { panic("boom") })
 
 	w := httptest.NewRecorder()

@@ -1,48 +1,67 @@
+import * as Crypto from 'expo-crypto';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { Amount, Button, Keypad, Pill, Screen, ScreenHeader, Text, Tile, applyKey } from '@/components';
-import { demo } from '@/config/demo';
 import { findMerchant } from '@/data/mock';
 import { useAccounts } from '@/lib/accounts';
+import { ApiError, createPayment } from '@/lib/api';
 import { compareMoney, formatMoney, idr } from '@/lib/format';
 import { colors, radii, spacing, type AmountSize } from '@/theme';
 
-/** Enter an amount and simulate paying the chosen merchant. */
+/** Enter an amount and pay the chosen merchant from the main balance. */
 export default function PayScreen() {
-  const params = useLocalSearchParams<{ merchantId?: string; amount?: string }>();
+  // `key` comes back from the failure screen so "Try again" retries the
+  // same payment instead of starting a new one.
+  const params = useLocalSearchParams<{ merchantId?: string; amount?: string; key?: string }>();
   const merchant = findMerchant(params.merchantId);
   const { main, error } = useAccounts();
 
   const [amount, setAmount] = useState(params.amount ?? '');
   const [processing, setProcessing] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (timer.current) clearTimeout(timer.current);
-  }, []);
+  // One Idempotency-Key per payment. Retrying the same amount reuses it, so
+  // a retry after a timeout can never charge twice; a new amount gets a new key.
+  const attempt = useRef(params.key && params.amount ? { key: params.key, amount: params.amount } : null);
 
   const value = Number(amount || '0');
   const empty = value === 0;
-  // Only a hint for the user: the server must enforce this once payments
-  // are real.
+  // Only a hint for the user; the server enforces the real check.
   const overBalance = main ? compareMoney(idr(amount), main.balance) > 0 : false;
   const blocked = empty || overBalance || !main;
 
   const size: AmountSize = amount.length > 9 ? 'sm' : amount.length > 6 ? 'lg' : 'xl';
   const figureColor = empty ? colors.textPlaceholder : overBalance ? colors.danger : colors.text;
 
-  const pay = () => {
+  const pay = async () => {
     if (blocked || processing) return;
+    if (attempt.current?.amount !== amount) attempt.current = { key: Crypto.randomUUID(), amount };
+    const { key } = attempt.current;
+    const money = idr(amount);
+
     setProcessing(true);
-    timer.current = setTimeout(() => {
-      const shared = { amount, merchantId: merchant.id };
-      if (demo.paymentOutcome === 'error') {
-        router.replace({ pathname: '/payment-failed', params: { ...shared, reason: 'error' } });
+    try {
+      const { transaction } = await createPayment({ merchantId: merchant.id, merchantName: merchant.name, amount: money }, key);
+      router.replace({
+        pathname: '/payment-success',
+        params: {
+          merchantId: merchant.id,
+          amount: money.value,
+          currency: money.currency,
+          transactionId: transaction.id,
+          createdAt: transaction.createdAt,
+        },
+      });
+    } catch (e) {
+      const shared = { merchantId: merchant.id, amount, currency: money.currency };
+      if (e instanceof ApiError && e.code === 'insufficient_funds') {
+        // A definite decline: the next attempt is a new payment.
+        router.replace({ pathname: '/payment-failed', params: { ...shared, reason: 'insufficient' } });
       } else {
-        router.replace({ pathname: '/payment-success', params: shared });
+        // The outcome may be unknown (e.g. a timeout), so retry with the same key.
+        router.replace({ pathname: '/payment-failed', params: { ...shared, reason: 'error', key } });
       }
-    }, demo.processingMs);
+    }
   };
 
   return (

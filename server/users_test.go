@@ -11,7 +11,7 @@ import (
 
 func TestRequireUser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter(demoStore(1))
+	router := testRouter(demoStore(1))
 
 	tests := []struct {
 		name     string
@@ -40,7 +40,7 @@ func TestRequireUser(t *testing.T) {
 
 func TestRequireUserStoreError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter(fakeStore{err: errors.New("db down")})
+	router := testRouter(fakeStore{err: errors.New("db down")})
 
 	w := get(router, "/v1/accounts", andiID)
 	if w.Code != http.StatusInternalServerError {
@@ -50,7 +50,7 @@ func TestRequireUserStoreError(t *testing.T) {
 
 func TestListAccounts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter(demoStore(0))
+	router := testRouter(demoStore(0))
 
 	w := get(router, "/v1/accounts", andiID)
 	if w.Code != http.StatusOK {

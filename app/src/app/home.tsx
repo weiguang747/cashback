@@ -1,4 +1,5 @@
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useRef } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button, EmptyState, Screen, SectionHeader, Spinner, Text, Tile, TransactionRow } from '@/components';
@@ -17,6 +18,21 @@ export default function HomeScreen() {
   const user = useUser();
   const accounts = useAccounts();
   const { data: transactions, error, loading, reload } = useTransactions(RECENT_COUNT);
+
+  // Refresh when coming back to Home (e.g. after paying). The first focus is
+  // skipped because the hooks above already load on mount.
+  const reloadAccounts = accounts.reload;
+  const firstFocus = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocus.current) {
+        firstFocus.current = false;
+        return;
+      }
+      reloadAccounts();
+      reload();
+    }, [reloadAccounts, reload]),
+  );
   const name = user?.name ?? '';
   const initials = name
     .split(/\s+/)

@@ -16,7 +16,7 @@ import (
 
 func TestListTransactions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := setupRouter(demoStore(12))
+	router := testRouter(demoStore(12))
 
 	tests := []struct {
 		name      string
@@ -71,7 +71,7 @@ func TestListTransactionsJSONShape(t *testing.T) {
 		{ID: "c", Name: "Uniqlo", Description: "Payment", Kind: "out", AmountMinor: -3_990, Currency: "JPY", MinorUnit: 0,
 			CreatedAt: time.Date(2026, 10, 11, 8, 0, 0, 0, wib)},
 	}
-	body := get(setupRouter(s), "/v1/transactions", andiID).Body.String()
+	body := get(testRouter(s), "/v1/transactions", andiID).Body.String()
 
 	for _, want := range []string{
 		`"amount":{"value":"-35000.00","currency":"IDR"}`,
@@ -88,7 +88,7 @@ func TestListTransactionsJSONShape(t *testing.T) {
 func TestListTransactionsStoreError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	s := demoStore(1)
-	router := setupRouter(failingTransactions{s})
+	router := testRouter(failingTransactions{s})
 
 	w := get(router, "/v1/transactions", andiID)
 	if w.Code != http.StatusInternalServerError || strings.Contains(w.Body.String(), "db down") {

@@ -27,3 +27,20 @@ FROM accounts a
 LEFT JOIN transactions t ON t.account_id = a.id
 GROUP BY a.id
 HAVING a.balance_minor <> COALESCE(SUM(t.amount_minor), 0);
+
+-- name: GetMainAccount :one
+SELECT a.id, a.currency, c.minor_unit, a.balance_minor
+FROM accounts a
+JOIN currencies c ON c.code = a.currency
+WHERE a.user_id = $1 AND a.kind = 'main' AND a.currency = $2;
+
+-- name: DebitAccount :one
+-- The overdraft guard. Matches no row when the balance is too low, and the
+-- row lock it takes makes concurrent debits of one account run in turn.
+UPDATE accounts
+SET balance_minor = balance_minor - sqlc.arg('amount_minor')
+WHERE id = sqlc.arg('id') AND balance_minor >= sqlc.arg('amount_minor')
+RETURNING balance_minor;
+
+-- name: GetAccountBalance :one
+SELECT balance_minor FROM accounts WHERE id = $1;

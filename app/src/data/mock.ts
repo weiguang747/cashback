@@ -18,9 +18,3 @@ export const merchants: Merchant[] = [
 export function findMerchant(id: string | undefined): Merchant {
   return merchants.find((m) => m.id === id) ?? merchants[0];
 }
-
-export const payment = {
-  date: '13 Oct 2026, 14:32',
-  source: 'Main balance',
-  reference: 'TRX 2410 1308 4421',
-};

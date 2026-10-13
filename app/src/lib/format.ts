@@ -161,8 +161,3 @@ export function isZeroMoney(m: Money): boolean {
 export function idr(amount: number | string): Money {
   return { value: String(amount || '0'), currency: 'IDR' };
 }
-
-/** 5% cash back, rounded down to whole rupiah. */
-export function cashbackFor(amount: number, rate = 0.05): number {
-  return Math.floor(amount * rate);
-}

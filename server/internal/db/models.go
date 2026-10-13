@@ -23,14 +23,15 @@ type Currency struct {
 }
 
 type Transaction struct {
-	ID          string
-	Name        string
-	Description string
-	Kind        string
-	AmountMinor int64
-	Currency    string
-	CreatedAt   time.Time
-	AccountID   string
+	ID             string
+	Name           string
+	Description    string
+	Kind           string
+	AmountMinor    int64
+	Currency       string
+	CreatedAt      time.Time
+	AccountID      string
+	IdempotencyKey *string
 }
 
 type User struct {

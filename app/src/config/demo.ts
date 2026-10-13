@@ -3,9 +3,7 @@
  * every state can be shown without a backend.
  */
 export const demo = {
-  /** Outcome of a payment that is within the balance. */
-  paymentOutcome: 'success' as 'success' | 'error',
-  /** Delay before a simulated payment or redemption resolves. */
+  /** Delay before a simulated redemption resolves. */
   processingMs: 1600,
 
   campaign: 'active' as 'active' | 'ended',

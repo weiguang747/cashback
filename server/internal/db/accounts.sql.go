@@ -9,6 +9,69 @@ import (
 	"context"
 )
 
+const debitAccount = `-- name: DebitAccount :one
+UPDATE accounts
+SET balance_minor = balance_minor - $1
+WHERE id = $2 AND balance_minor >= $1
+RETURNING balance_minor
+`
+
+type DebitAccountParams struct {
+	AmountMinor int64
+	ID          string
+}
+
+// The overdraft guard. Matches no row when the balance is too low, and the
+// row lock it takes makes concurrent debits of one account run in turn.
+func (q *Queries) DebitAccount(ctx context.Context, arg DebitAccountParams) (int64, error) {
+	row := q.db.QueryRow(ctx, debitAccount, arg.AmountMinor, arg.ID)
+	var balance_minor int64
+	err := row.Scan(&balance_minor)
+	return balance_minor, err
+}
+
+const getAccountBalance = `-- name: GetAccountBalance :one
+SELECT balance_minor FROM accounts WHERE id = $1
+`
+
+func (q *Queries) GetAccountBalance(ctx context.Context, id string) (int64, error) {
+	row := q.db.QueryRow(ctx, getAccountBalance, id)
+	var balance_minor int64
+	err := row.Scan(&balance_minor)
+	return balance_minor, err
+}
+
+const getMainAccount = `-- name: GetMainAccount :one
+SELECT a.id, a.currency, c.minor_unit, a.balance_minor
+FROM accounts a
+JOIN currencies c ON c.code = a.currency
+WHERE a.user_id = $1 AND a.kind = 'main' AND a.currency = $2
+`
+
+type GetMainAccountParams struct {
+	UserID   string
+	Currency string
+}
+
+type GetMainAccountRow struct {
+	ID           string
+	Currency     string
+	MinorUnit    int16
+	BalanceMinor int64
+}
+
+func (q *Queries) GetMainAccount(ctx context.Context, arg GetMainAccountParams) (GetMainAccountRow, error) {
+	row := q.db.QueryRow(ctx, getMainAccount, arg.UserID, arg.Currency)
+	var i GetMainAccountRow
+	err := row.Scan(
+		&i.ID,
+		&i.Currency,
+		&i.MinorUnit,
+		&i.BalanceMinor,
+	)
+	return i, err
+}
+
 const listAccounts = `-- name: ListAccounts :many
 SELECT a.id, a.kind, a.currency, c.minor_unit, a.balance_minor
 FROM accounts a

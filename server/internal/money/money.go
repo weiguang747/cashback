@@ -4,6 +4,8 @@ package money
 
 import (
 	"encoding/json"
+	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -53,4 +55,30 @@ type jsonMoney struct {
 // string so JSON parsers never round it through a float.
 func (m Money) MarshalJSON() ([]byte, error) {
 	return json.Marshal(jsonMoney{Value: m.Decimal(), Currency: m.Currency})
+}
+
+var decimalPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+
+// Parse converts a positive decimal string in major units, e.g. "35000" or
+// "10.99", to minor units for a currency with the given exponent. It is the
+// exact inverse of Decimal and never goes through a float. It rejects signs,
+// exponents, more fraction digits than the currency has, zero, and values
+// that don't fit in int64.
+func Parse(value string, exponent int) (int64, error) {
+	if !decimalPattern.MatchString(value) {
+		return 0, errors.New("amount must be a positive decimal number")
+	}
+	whole, frac, _ := strings.Cut(value, ".")
+	if len(frac) > exponent {
+		return 0, errors.New("amount has too many decimal places for its currency")
+	}
+	digits := strings.TrimLeft(whole+frac+strings.Repeat("0", exponent-len(frac)), "0")
+	if digits == "" {
+		return 0, errors.New("amount must be greater than zero")
+	}
+	minor, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		return 0, errors.New("amount is too large")
+	}
+	return minor, nil
 }

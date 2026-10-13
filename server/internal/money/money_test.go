@@ -42,3 +42,45 @@ func TestMarshalJSON(t *testing.T) {
 		t.Errorf("got %s, want %s", b, want)
 	}
 }
+
+func TestParse(t *testing.T) {
+	tests := []struct {
+		value    string
+		exponent int
+		want     int64
+		wantErr  bool
+	}{
+		{"35000", 2, 3_500_000, false},
+		{"35000.5", 2, 3_500_050, false},
+		{"35000.50", 2, 3_500_050, false},
+		{"0.05", 2, 5, false},
+		{"0035000", 2, 3_500_000, false},
+		{"3990", 0, 3990, false},
+		{"92233720368547758.07", 2, math.MaxInt64, false},
+		{"1.234", 2, 0, true},
+		{"1.5", 0, 0, true},
+		{"0", 2, 0, true},
+		{"0.00", 2, 0, true},
+		{"-5", 2, 0, true},
+		{"+5", 2, 0, true},
+		{"1e3", 2, 0, true},
+		{"1,000", 2, 0, true},
+		{" 5", 2, 0, true},
+		{".5", 2, 0, true},
+		{"5.", 2, 0, true},
+		{"", 2, 0, true},
+		{"92233720368547758.08", 2, 0, true},
+	}
+	for _, tt := range tests {
+		got, err := Parse(tt.value, tt.exponent)
+		if (err != nil) != tt.wantErr || got != tt.want {
+			t.Errorf("Parse(%q, %d) = %d, %v; want %d, err=%v", tt.value, tt.exponent, got, err, tt.want, tt.wantErr)
+		}
+		// Round trip: what Parse accepts, Decimal gives back (normalized).
+		if err == nil {
+			if back, _ := Parse(Money{Minor: got, Exponent: tt.exponent}.Decimal(), tt.exponent); back != got {
+				t.Errorf("round trip of %q = %d, want %d", tt.value, back, got)
+			}
+		}
+	}
+}
