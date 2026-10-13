@@ -1,9 +1,10 @@
 package main
 
 import (
-	"log"
 	"net/http"
 	"os"
+
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
@@ -13,12 +14,17 @@ func main() {
 		port = "8080"
 	}
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	})
-
 	// Listen on all interfaces (":8080"), not "localhost:8080" —
 	// inside a container, localhost is unreachable from your Mac.
-	log.Printf("listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	setupRouter().Run(":" + port)
+}
+
+// setupRouter registers all routes. It's separate from main so tests can use it.
+func setupRouter() *gin.Engine {
+	router := gin.Default()
+	router.GET("/health", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+	router.POST("/auth/sign-in", signIn)
+	return router
 }

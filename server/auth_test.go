@@ -1,0 +1,59 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+)
+
+func TestSignIn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := setupRouter()
+
+	tests := []struct {
+		name      string
+		body      string
+		wantCode  int
+		wantEmail string
+	}{
+		{"valid email", `{"email":"you@example.com"}`, http.StatusOK, "you@example.com"},
+		{"normalizes case and spaces", `{"email":"  You@Example.COM "}`, http.StatusOK, "you@example.com"},
+		{"empty email", `{"email":""}`, http.StatusBadRequest, ""},
+		{"missing email", `{}`, http.StatusBadRequest, ""},
+		{"no at sign", `{"email":"not-an-email"}`, http.StatusBadRequest, ""},
+		{"no dot in domain", `{"email":"a@b"}`, http.StatusBadRequest, ""},
+		{"display name", `{"email":"Name <a@b.co>"}`, http.StatusBadRequest, ""},
+		{"malformed JSON", `{"email":`, http.StatusBadRequest, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/auth/sign-in", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.wantCode, w.Body)
+			}
+			if tt.wantCode != http.StatusOK {
+				return
+			}
+
+			var resp signInResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid JSON response: %v", err)
+			}
+			if resp.User.Email != tt.wantEmail {
+				t.Errorf("email = %q, want %q", resp.User.Email, tt.wantEmail)
+			}
+			if len(resp.Token) != 64 {
+				t.Errorf("token length = %d, want 64", len(resp.Token))
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from 'react-native';
 
 import { Button, Icon, Screen, Text, TextField } from '@/components';
+import * as api from '@/lib/api';
 import { colors, radii, spacing } from '@/theme';
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -10,10 +11,28 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /** Sign in — demo only, no password. */
 export default function SignInScreen() {
   const [email, setEmail] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const valid = EMAIL.test(email.trim());
 
-  const signIn = () => {
-    if (valid) router.replace('/home');
+  const signIn = async () => {
+    if (!valid || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      // TODO: store the token once the server issues real ones.
+      await api.signIn(email.trim());
+      router.replace('/home');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onChangeEmail = (text: string) => {
+    setEmail(text);
+    setError(null);
   };
 
   return (
@@ -34,7 +53,7 @@ export default function SignInScreen() {
           <TextField
             label="Email"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={onChangeEmail}
             placeholder="you@example.com"
             keyboardType="email-address"
             autoCapitalize="none"
@@ -45,11 +64,16 @@ export default function SignInScreen() {
             onSubmitEditing={signIn}
             valid={valid}
           />
+          {error && (
+            <Text variant="caption" color="danger" accessibilityRole="alert" style={styles.error}>
+              {error}
+            </Text>
+          )}
         </View>
 
         <View style={styles.flex} />
 
-        <Button label="Continue" onPress={signIn} disabled={!valid} />
+        <Button label="Continue" onPress={signIn} disabled={!valid} loading={loading} />
         <Text variant="caption" color="textMuted" align="center" style={styles.note}>
           Demo app · no password needed
         </Text>
@@ -72,5 +96,6 @@ const styles = StyleSheet.create({
   title: { marginTop: spacing.xxxl },
   subtitle: { marginTop: spacing.sm },
   field: { marginTop: spacing.xxxl },
+  error: { marginTop: spacing.sm },
   note: { marginTop: spacing.lg },
 });
