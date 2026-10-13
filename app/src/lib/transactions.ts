@@ -67,13 +67,16 @@ function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
+/** Cache keys for recent transactions are this plus the count. */
+export const RECENT_TRANSACTIONS_KEY = 'transactions:recent:';
+
 /** The signed-in user's `count` most recent transactions (one page). */
 export function useRecentTransactions(count: number) {
   const fetcher = useCallback(
     (signal: AbortSignal) => getTransactions({ limit: count, signal }).then((page) => page.transactions),
     [count],
   );
-  return useApi(fetcher);
+  return useApi(RECENT_TRANSACTIONS_KEY + count, fetcher);
 }
 
 /**

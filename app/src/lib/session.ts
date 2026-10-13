@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
 import type { User } from './api';
+import { clearCache } from './cache';
 
 // The signed-in user, kept in SecureStore (Keychain / Keystore) so reloads
 // and restarts stay signed in. Web has no SecureStore, so there it lives in
@@ -43,6 +44,8 @@ export function getUser(): User | null {
 }
 
 export function setUser(user: User | null) {
+  // Cached data belongs to whoever was signed in before.
+  if (user?.id !== current?.id) clearCache();
   current = user;
   save(user);
   listeners.forEach((l) => l());

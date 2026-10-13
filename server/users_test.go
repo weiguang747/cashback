@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"cashback/server/internal/db"
 )
 
 func TestRequireUser(t *testing.T) {
@@ -45,6 +49,70 @@ func TestRequireUserStoreError(t *testing.T) {
 	w := get(router, "/v1/accounts", andiID)
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 (a database error is not a sign-in problem)", w.Code)
+	}
+}
+
+// countingStore counts GetUser calls.
+type countingStore struct {
+	fakeStore
+	getUser *int
+}
+
+func (s countingStore) GetUser(ctx context.Context, id string) (db.GetUserRow, error) {
+	*s.getUser++
+	return s.fakeStore.GetUser(ctx, id)
+}
+
+func TestRequireUserCachesUsers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	calls := 0
+	router := testRouter(countingStore{fakeStore: demoStore(1), getUser: &calls})
+
+	for range 3 {
+		if w := get(router, "/v1/accounts", andiID); w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", w.Code, w.Body)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("GetUser called %d times for one user, want 1", calls)
+	}
+
+	// Unknown users aren't cached: each attempt is checked and refused.
+	unknown := "33333333-3333-4333-8333-333333333333"
+	for range 2 {
+		if w := get(router, "/v1/accounts", unknown); w.Code != http.StatusUnauthorized {
+			t.Errorf("unknown user: status = %d, want 401", w.Code)
+		}
+	}
+	if calls != 3 {
+		t.Errorf("GetUser called %d times, want 3 (unknown users looked up every time)", calls)
+	}
+}
+
+func TestUserCache(t *testing.T) {
+	now := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	uc := newUserCache(30*time.Second, 2)
+	uc.now = func() time.Time { return now }
+
+	andi := user{ID: andiID, Email: "andi@example.com", Name: "Andi"}
+	uc.put(andi)
+	if got, ok := uc.get(andiID); !ok || got != andi {
+		t.Fatalf("get = %+v, %v; want andi", got, ok)
+	}
+	now = now.Add(30 * time.Second)
+	if _, ok := uc.get(andiID); ok {
+		t.Error("entry still served after its TTL")
+	}
+
+	// Full: expired entries go first, then everything if none had expired.
+	uc.put(user{ID: sarahID})
+	uc.put(user{ID: "a"})
+	if len(uc.entries) != 2 {
+		t.Errorf("entries = %d, want the expired one dropped to make room", len(uc.entries))
+	}
+	uc.put(user{ID: "b"})
+	if len(uc.entries) > 2 {
+		t.Errorf("entries = %d, want at most 2", len(uc.entries))
 	}
 }
 

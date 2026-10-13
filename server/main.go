@@ -149,7 +149,7 @@ func setupRouter(s store, idem idempotency.Store) *gin.Engine {
 	v1 := router.Group("/v1", httpx.Timeout(requestTimeout))
 	v1.POST("/auth/sign-in", signIn(s))
 
-	signedIn := v1.Group("", requireUser(s))
+	signedIn := v1.Group("", requireUser(s, newUserCache(userCacheTTL, userCacheMax)))
 	signedIn.GET("/accounts", listAccounts(s))
 	signedIn.GET("/transactions", listTransactions(s))
 	signedIn.POST("/payments", createPayment(s, idem))

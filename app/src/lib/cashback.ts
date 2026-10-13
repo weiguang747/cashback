@@ -4,10 +4,13 @@ import { getCampaign, getCashbackHistory } from './api';
 import { useApi } from './useApi';
 import { usePages } from './usePages';
 
+/** Cache key for the campaign the user sees. */
+export const CAMPAIGN_KEY = 'cashback:campaign';
+
 /** The cash back campaign to show: live, ended, or null if there's never been one. */
 export function useCampaign() {
   const fetcher = useCallback((signal: AbortSignal) => getCampaign({ signal }), []);
-  return useApi(fetcher);
+  return useApi(CAMPAIGN_KEY, fetcher);
 }
 
 /**

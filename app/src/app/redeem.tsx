@@ -7,6 +7,7 @@ import { Amount, Button, Icon, ListRow, ResultHero, Screen, ScreenHeader, Spinne
 import { useAccounts } from '@/lib/accounts';
 import { ApiError, redeemCashback, type Redemption } from '@/lib/api';
 import { formatMoney, isZeroMoney } from '@/lib/format';
+import { recordRedemption } from '@/lib/wallet';
 import { colors, radii, spacing } from '@/theme';
 
 /** Move the full cash back balance into the available balance. */
@@ -27,7 +28,9 @@ export default function RedeemScreen() {
     setProcessing(true);
     setFailure(null);
     try {
-      setDone(await redeemCashback(amount, attempt.current.key));
+      const redemption = await redeemCashback(amount, attempt.current.key);
+      recordRedemption(redemption);
+      setDone(redemption);
     } catch (e) {
       if (e instanceof ApiError && e.code === 'insufficient_funds') {
         // The balance changed since it loaded: show the new one and start over.

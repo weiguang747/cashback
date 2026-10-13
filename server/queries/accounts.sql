@@ -45,6 +45,13 @@ RETURNING balance_minor;
 -- name: GetAccountBalance :one
 SELECT balance_minor FROM accounts WHERE id = $1;
 
--- name: LockAccount :one
--- Locks an account row so money moves that touch it run one at a time.
-SELECT balance_minor FROM accounts WHERE id = $1 FOR UPDATE;
+-- name: LockUserAccounts :many
+-- A user's main and cash back accounts in one currency, locked in the
+-- money lock order: main first, then cash back. Rows are locked after the
+-- sort, so the ORDER BY is the lock order.
+SELECT a.id, a.kind, a.balance_minor, c.minor_unit
+FROM accounts a
+JOIN currencies c ON c.code = a.currency
+WHERE a.user_id = sqlc.arg('user_id')::uuid AND a.currency = sqlc.arg('currency') AND a.kind IN ('main', 'cashback')
+ORDER BY a.kind = 'main' DESC
+FOR UPDATE OF a;

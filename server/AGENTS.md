@@ -91,6 +91,8 @@ Fingerprints are prefixed with the operation (`"payment"`, `"redeem"`), so a key
 
 There is no real authentication. Sign-in looks up an existing email (`no account for this email` → 401) and returns the user. The app then sends `X-User-ID: <uuid>` and `requireUser` loads the user from it. **Anyone who knows a user id can act as them.** This lives in one middleware on purpose: replace `requireUser` with a token check when real auth arrives; handlers only use `currentUser(c)`.
 
+`requireUser` caches users it has loaded for 30 s (`userCache` in `users.go`, at most 10,000 entries), so most requests skip the `GetUser` query. Unknown ids are never cached and are refused every time. Users aren't deleted while the server runs, so the cache only delays noticing a re-created database; restart the server after re-seeding into a fresh database.
+
 ## Cash back campaigns
 
 - **One live campaign per currency**, enforced by an exclusion constraint (`campaigns_no_overlap`). Future campaigns can be scheduled; back-to-back is fine.
@@ -104,7 +106,7 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 
 ## Redemption
 
-`Redeem` moves an amount (the app sends the full balance it displayed) from the user's cash back account to their main account as a double-entry pair. It uses the conditional debit, so it can't redeem more than the balance, and the same idempotency and lock order as payments.
+`Redeem` moves an amount (the app sends the full balance it displayed) from the user's cash back account to their main account as a double-entry pair. It uses the conditional debit, so it can't redeem more than the balance, and the same idempotency and lock order as payments. It finds and locks both accounts in one query (`LockUserAccounts`, whose `ORDER BY` is the lock order) and builds its result from what it inserted instead of reading it back; keep new money operations to as few round trips as that.
 
 ## API conventions
 

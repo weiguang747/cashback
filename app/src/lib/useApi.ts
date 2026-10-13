@@ -1,14 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+
+import { cacheGeneration, getCached, isFresh, setCached, subscribe } from './cache';
 
 /**
- * Loads data from the server on mount and exposes `reload`. `data` stays
- * populated when a reload fails, so screens can keep showing it alongside
- * the error. `fetcher` must be stable (wrap it in useCallback).
+ * Loads data from the server into the shared cache under `key` (see
+ * `cache.ts`) and exposes `reload` and `refresh`. Data another screen
+ * loaded recently shows at once and isn't fetched again on mount. `data`
+ * stays populated when a reload fails, so screens can keep showing it
+ * alongside the error. `fetcher` must be stable (wrap it in useCallback).
  */
-export function useApi<T>(fetcher: (signal: AbortSignal) => Promise<T>) {
-  const [data, setData] = useState<T | null>(null);
+export function useApi<T>(key: string, fetcher: (signal: AbortSignal) => Promise<T>) {
+  const subscribeKey = useCallback((listener: () => void) => subscribe(key, listener), [key]);
+  const snapshot = useCallback(() => getCached<T>(key) ?? null, [key]);
+  const data = useSyncExternalStore(subscribeKey, snapshot);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !isFresh(key));
   const controller = useRef<AbortController | null>(null);
 
   // State is only set in the promise callbacks, so the mount effect below
@@ -17,9 +23,10 @@ export function useApi<T>(fetcher: (signal: AbortSignal) => Promise<T>) {
     controller.current?.abort();
     const c = new AbortController();
     controller.current = c;
+    const gen = cacheGeneration();
     return fetcher(c.signal).then(
       (result) => {
-        setData(result);
+        setCached(key, result, gen);
         setError(null);
         setLoading(false);
       },
@@ -29,18 +36,22 @@ export function useApi<T>(fetcher: (signal: AbortSignal) => Promise<T>) {
         setLoading(false);
       },
     );
-  }, [fetcher]);
+  }, [fetcher, key]);
 
+  /** Fetches again now, showing `loading`. */
   const reload = useCallback(() => {
     setLoading(true);
     setError(null);
     return run();
   }, [run]);
 
-  useEffect(() => {
-    run();
-    return () => controller.current?.abort();
-  }, [run]);
+  /** Fetches in the background only if the data is missing, old or invalidated. */
+  const refresh = useCallback(() => (isFresh(key) ? Promise.resolve() : run()), [key, run]);
 
-  return { data, error, loading, reload };
+  useEffect(() => {
+    if (!isFresh(key)) run();
+    return () => controller.current?.abort();
+  }, [key, run]);
+
+  return { data, error, loading, reload, refresh };
 }

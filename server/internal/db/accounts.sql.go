@@ -115,16 +115,53 @@ func (q *Queries) ListAccounts(ctx context.Context, userID string) ([]ListAccoun
 	return items, nil
 }
 
-const lockAccount = `-- name: LockAccount :one
-SELECT balance_minor FROM accounts WHERE id = $1 FOR UPDATE
+const lockUserAccounts = `-- name: LockUserAccounts :many
+SELECT a.id, a.kind, a.balance_minor, c.minor_unit
+FROM accounts a
+JOIN currencies c ON c.code = a.currency
+WHERE a.user_id = $1::uuid AND a.currency = $2 AND a.kind IN ('main', 'cashback')
+ORDER BY a.kind = 'main' DESC
+FOR UPDATE OF a
 `
 
-// Locks an account row so money moves that touch it run one at a time.
-func (q *Queries) LockAccount(ctx context.Context, id string) (int64, error) {
-	row := q.db.QueryRow(ctx, lockAccount, id)
-	var balance_minor int64
-	err := row.Scan(&balance_minor)
-	return balance_minor, err
+type LockUserAccountsParams struct {
+	UserID   string
+	Currency string
+}
+
+type LockUserAccountsRow struct {
+	ID           string
+	Kind         string
+	BalanceMinor int64
+	MinorUnit    int16
+}
+
+// A user's main and cash back accounts in one currency, locked in the
+// money lock order: main first, then cash back. Rows are locked after the
+// sort, so the ORDER BY is the lock order.
+func (q *Queries) LockUserAccounts(ctx context.Context, arg LockUserAccountsParams) ([]LockUserAccountsRow, error) {
+	rows, err := q.db.Query(ctx, lockUserAccounts, arg.UserID, arg.Currency)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LockUserAccountsRow
+	for rows.Next() {
+		var i LockUserAccountsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.BalanceMinor,
+			&i.MinorUnit,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const reconcileAccounts = `-- name: ReconcileAccounts :many

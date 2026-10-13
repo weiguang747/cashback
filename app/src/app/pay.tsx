@@ -8,6 +8,7 @@ import { findMerchant } from '@/data/merchants';
 import { useAccounts } from '@/lib/accounts';
 import { ApiError, createPayment } from '@/lib/api';
 import { compareMoney, formatMoney, wholeUnits } from '@/lib/format';
+import { recordPayment } from '@/lib/wallet';
 import { colors, radii, spacing, type AmountSize } from '@/theme';
 
 /** Enter an amount and pay the chosen merchant from the main balance. */
@@ -45,10 +46,12 @@ export default function PayScreen() {
 
     setProcessing(true);
     try {
-      const { transaction, cashback } = await createPayment(
+      const payment = await createPayment(
         { merchantId: merchant.id, merchantName: merchant.name, amount: money },
         key,
       );
+      recordPayment(payment);
+      const { transaction, cashback } = payment;
       router.replace({
         pathname: '/payment-success',
         params: {

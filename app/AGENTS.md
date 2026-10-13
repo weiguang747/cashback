@@ -68,7 +68,9 @@ npx expo start                                   # then i / a, or open exp://127
 | `src/components/` | Generic, reusable UI (`Text`, `Button`, `Amount`, `TransactionRow`, …), exported from `index.ts` |
 | `src/features/<area>/` | Components specific to one area (`wallet/BalanceCard`, `cashback/CashbackBanner`, …) |
 | `src/lib/api.ts` | The only place that calls `fetch`: types mirroring the API, `ApiError`, request helpers |
-| `src/lib/useApi.ts` | Generic load/reload hook; `accounts.ts`, `transactions.ts` and `cashback.ts` build data hooks on it |
+| `src/lib/cache.ts` | Server data shared between screens, by key; cleared on sign-in and sign-out |
+| `src/lib/useApi.ts` | Load/reload hook backed by the cache; `accounts.ts`, `transactions.ts` and `cashback.ts` build data hooks on it |
+| `src/lib/wallet.ts` | Puts the server's payment and redemption responses into the cache |
 | `src/lib/usePages.ts` | Cursor-paged lists: first page, `loadMore` for `onEndReached`, restart when the query changes |
 | `src/lib/session.ts` | Signed-in user: in memory + SecureStore |
 | `src/lib/format.ts` | Money formatting and exact money arithmetic |
@@ -95,11 +97,13 @@ npx expo start                                   # then i / a, or open exp://127
 ## Data loading
 
 - Screens get data from hooks built on `useApi` (`useAccounts`, `useRecentTransactions`, `useCampaign`) or, for lists, `usePages` (`useTransactionPages`, `useCashbackHistory`).
+- **`useApi` data is shared through `lib/cache.ts`**, by key (`ACCOUNTS_KEY`, `CAMPAIGN_KEY`, `RECENT_TRANSACTIONS_KEY` + count). Data loaded in the last 30 s (`FRESH_MS`) shows at once and isn't fetched again on mount, so Pay and Redeem open with the balance Home already has. `reload()` always fetches; `refresh()` fetches only stale or invalidated data.
+- **After moving money, write the server's response into the cache** (`recordPayment`, `recordRedemption` in `lib/wallet.ts`) and `invalidate` whatever the response doesn't state, rather than refetching everything. Only cache what the server said; never compute balances into it.
 - **Lists are paged by the server** (20 rows per page, `nextCursor`). Load more with `onEndReached` → `loadMore` and show `LoadMoreFooter`; after a failed page, wait for "Try again" instead of retrying on every scroll. **Filter and search on the server** (`kind`, `q` on `getTransactions`), never over the rows loaded so far: they're only part of the history. Debounce typed search (`useDebounced`).
 - `data` stays populated when a reload fails, so screens show stale data alongside the error instead of blanking.
 - State is only set in promise callbacks (the `react-hooks/set-state-in-effect` lint rule).
-- Home reloads its hooks on focus (`useFocusEffect`, skipping the first), so balances update after paying or redeeming. Do the same for any screen showing balances.
-- No data-fetching library yet; add one (e.g. React Query) only if caching or sharing between screens becomes necessary.
+- Home calls `refresh()` on its hooks on focus (`useFocusEffect`, skipping the first), so anything stale or invalidated is fetched when the user comes back. Do the same for any screen showing balances.
+- Paged lists (`usePages`) aren't cached; they load fresh on mount. If the cache outgrows this (more screens, mutations, offline), switch to a data-fetching library such as React Query rather than extending it.
 
 ## Moving money (pay, redeem)
 

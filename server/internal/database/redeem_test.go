@@ -43,6 +43,18 @@ func TestRedeemMovesCashbackToMain(t *testing.T) {
 	if r.Transaction.Kind != "cashback" || r.Transaction.AmountMinor != 350_000 {
 		t.Errorf("main credit = %+v", r.Transaction)
 	}
+	// The result is built without reading the row back; it must match it.
+	key := "redeem-all"
+	stored, err := db.New(pool).GetTransactionByIdempotencyKey(context.Background(),
+		db.GetTransactionByIdempotencyKeyParams{AccountID: u.main, IdempotencyKey: &key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Transaction.ID != stored.ID || !r.Transaction.CreatedAt.Equal(stored.CreatedAt) ||
+		r.Transaction.Name != stored.Name || r.Transaction.Description != stored.Description ||
+		r.Transaction.Currency != stored.Currency || r.Transaction.MinorUnit != stored.MinorUnit {
+		t.Errorf("returned credit = %+v\nstored         %+v", r.Transaction, stored)
+	}
 	if b := balanceOf(t, pool, u.cashback); b != 0 {
 		t.Errorf("cash back balance = %d, want 0", b)
 	}

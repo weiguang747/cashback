@@ -50,19 +50,25 @@ func Redeem(ctx context.Context, pool *pgxpool.Pool, p RedeemParams) (RedeemResu
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
 
-	main, err := q.GetUserAccount(ctx, db.GetUserAccountParams{UserID: p.UserID, Kind: "main", Currency: p.Currency})
+	// One round trip finds and locks both accounts, main first.
+	accounts, err := q.LockUserAccounts(ctx, db.LockUserAccountsParams{UserID: p.UserID, Currency: p.Currency})
 	if err != nil {
-		return RedeemResult{}, fmt.Errorf("main account: %w", err)
+		return RedeemResult{}, fmt.Errorf("lock accounts: %w", err)
 	}
-	cashback, err := q.GetUserAccount(ctx, db.GetUserAccountParams{UserID: p.UserID, Kind: "cashback", Currency: p.Currency})
-	if errors.Is(err, pgx.ErrNoRows) {
+	var main, cashback *db.LockUserAccountsRow
+	for i := range accounts {
+		switch accounts[i].Kind {
+		case "main":
+			main = &accounts[i]
+		case "cashback":
+			cashback = &accounts[i]
+		}
+	}
+	if main == nil {
+		return RedeemResult{}, fmt.Errorf("main account: %w", pgx.ErrNoRows)
+	}
+	if cashback == nil {
 		return RedeemResult{}, ErrNoCashbackAccount
-	}
-	if err != nil {
-		return RedeemResult{}, fmt.Errorf("cash back account: %w", err)
-	}
-	if _, err := q.LockAccount(ctx, main.ID); err != nil {
-		return RedeemResult{}, fmt.Errorf("lock main account: %w", err)
 	}
 
 	cashbackLeft, err := q.DebitAccount(ctx, db.DebitAccountParams{ID: cashback.ID, AmountMinor: p.AmountMinor})
@@ -73,7 +79,8 @@ func Redeem(ctx context.Context, pool *pgxpool.Pool, p RedeemParams) (RedeemResu
 		return RedeemResult{}, fmt.Errorf("debit cash back: %w", err)
 	}
 
-	now := time.Now()
+	// Postgres keeps microseconds, so the response matches the stored row.
+	now := time.Now().Truncate(time.Microsecond)
 	key := p.IdempotencyKey
 	_, err = q.InsertTransaction(ctx, db.InsertTransactionParams{
 		AccountID: cashback.ID, Name: "Cash back redeemed", Description: "To available balance",
@@ -91,22 +98,26 @@ func Redeem(ctx context.Context, pool *pgxpool.Pool, p RedeemParams) (RedeemResu
 	if err != nil {
 		return RedeemResult{}, fmt.Errorf("credit main: %w", err)
 	}
-	if _, err := q.InsertTransaction(ctx, db.InsertTransactionParams{
+	credit := db.InsertTransactionParams{
 		AccountID: main.ID, Name: "Cash back redeemed", Description: "To available balance",
 		Kind: "cashback", AmountMinor: p.AmountMinor, Currency: p.Currency, CreatedAt: now, IdempotencyKey: &key,
-	}); isIdempotencyConflict(err) {
+	}
+	creditID, err := q.InsertTransaction(ctx, credit)
+	if isIdempotencyConflict(err) {
 		// The key already paid for something on the main account.
 		return RedeemResult{}, ErrKeyReused
-	} else if err != nil {
+	}
+	if err != nil {
 		return RedeemResult{}, fmt.Errorf("record main credit: %w", err)
 	}
 
-	row, err := q.GetTransactionByIdempotencyKey(ctx, db.GetTransactionByIdempotencyKeyParams{AccountID: main.ID, IdempotencyKey: &key})
-	if err != nil {
-		return RedeemResult{}, fmt.Errorf("read redemption: %w", err)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return RedeemResult{}, fmt.Errorf("commit redemption: %w", err)
+	}
+	// Built from what was inserted rather than read back: one round trip fewer.
+	row := db.GetTransactionByIdempotencyKeyRow{
+		ID: creditID, Name: credit.Name, Description: credit.Description, Kind: credit.Kind,
+		AmountMinor: credit.AmountMinor, Currency: credit.Currency, MinorUnit: cashback.MinorUnit, CreatedAt: now,
 	}
 	return RedeemResult{
 		Transaction: row, MainBalanceMinor: mainBalance, CashbackBalanceMinor: cashbackLeft, MinorUnit: cashback.MinorUnit,

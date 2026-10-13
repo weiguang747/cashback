@@ -18,12 +18,14 @@ const RECENT_COUNT = 6;
 export default function HomeScreen() {
   const user = useUser();
   const accounts = useAccounts();
-  const { data: campaign, reload: reloadCampaign } = useCampaign();
-  const { data: transactions, error, loading, reload } = useRecentTransactions(RECENT_COUNT);
+  const { data: campaign, refresh: refreshCampaign } = useCampaign();
+  const { data: transactions, error, loading, reload, refresh: refreshTransactions } = useRecentTransactions(RECENT_COUNT);
 
-  // Refresh when coming back to Home (e.g. after paying). The first focus is
+  // Refresh when coming back to Home. Paying or redeeming already put the
+  // server's new balances and transaction in the cache (see lib/wallet.ts),
+  // so this only fetches what's old or was invalidated. The first focus is
   // skipped because the hooks above already load on mount.
-  const reloadAccounts = accounts.reload;
+  const refreshAccounts = accounts.refresh;
   const firstFocus = useRef(true);
   useFocusEffect(
     useCallback(() => {
@@ -31,11 +33,12 @@ export default function HomeScreen() {
         firstFocus.current = false;
         return;
       }
-      reloadAccounts();
-      reloadCampaign();
-      reload();
-    }, [reloadAccounts, reloadCampaign, reload]),
+      refreshAccounts();
+      refreshCampaign();
+      refreshTransactions();
+    }, [refreshAccounts, refreshCampaign, refreshTransactions]),
   );
+
   const name = user?.name ?? '';
   const initials = name
     .split(/\s+/)
