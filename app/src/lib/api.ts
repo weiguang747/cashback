@@ -129,16 +129,25 @@ export async function redeemCashback(amount: Money, idempotencyKey: string): Pro
 /**
  * A failed request. `status` is 0 when the server couldn't be reached, and
  * `code` is the server's machine-readable reason, e.g. "insufficient_funds".
+ * `requestId` finds the request in the server logs.
  */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly code?: string,
+    readonly requestId?: string,
   ) {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+// Development builds only. Logs method, path, status, code and request id:
+// never bodies or headers, which carry user data and the user id.
+function logFailure(method: string, path: string, e: ApiError) {
+  if (!__DEV__) return;
+  console.warn(`[api] ${method} ${path.split('?')[0]} failed: ${e.status || 'network'} ${e.code ?? ''} (request ${e.requestId ?? 'none'})`);
 }
 
 function post<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
@@ -155,12 +164,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (user) headers.set('X-User-ID', user.id);
 
+  const method = init.method ?? 'GET';
   let res: Response;
   try {
     res = await fetch(`${API_URL}${path}`, { ...init, headers });
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') throw e;
-    throw new ApiError("Can't reach the server. Check your connection and try again.", 0);
+    const err = new ApiError("Can't reach the server. Check your connection and try again.", 0);
+    logFailure(method, path, err);
+    throw err;
   }
 
   const data = await res.json().catch(() => null);
@@ -168,7 +180,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   // Signing out sends the app back to the sign-in screen.
   if (res.status === 401 && user) clearUser();
   if (!res.ok) {
-    throw new ApiError(data?.error ?? 'Something went wrong. Please try again.', res.status, data?.code);
+    const err = new ApiError(
+      data?.error ?? 'Something went wrong. Please try again.',
+      res.status,
+      data?.code,
+      res.headers.get('X-Request-ID') ?? undefined,
+    );
+    logFailure(method, path, err);
+    throw err;
   }
   return data as T;
 }

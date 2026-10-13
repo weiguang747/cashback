@@ -44,7 +44,8 @@ Run `gofmt`, `go vet`, `go tool sqlc diff` and the full test suite (with both `T
 | `internal/money` | `Money{Minor, Currency, Exponent}`, `Decimal()` and `Parse()`: exact conversion between minor units and decimal strings |
 | `internal/cashback` | Pure award maths (`Award`): rate, minimum, daily cap, budget |
 | `internal/idempotency` | Redis-backed `Store`: lock a key, cache the response, replay |
-| `internal/httpx` | JSON error shape and helpers |
+| `internal/httpx` | JSON error shape, request logging (`RequestLogger`, `AddToLogger`) and panic recovery |
+| `internal/logx` | Structured logging: JSON `slog` with central redaction, per-request logger (`logx.From(ctx)`) |
 | `migrations/` | goose SQL, embedded via `migrations.go` |
 | `queries/` | sqlc input |
 | `cmd/seed` | Demo data. Never put demo rows in a migration. |
@@ -111,6 +112,22 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 - **No internal details in error responses.** Log the error with `log.Printf` and return `something went wrong`.
 - **Lists are newest first.** An optional `limit` must be a positive int32; NULL means no limit.
 - **Versioning:** `/v1` may change while the app is unreleased. After release, breaking changes go in `/v2`.
+
+## Logging
+
+- **Format:** JSON lines on stdout via `log/slog`, set up in `main.go` (`LOG_LEVEL`: debug, info, warn, error).
+- **Getting a logger:** in a handler, `logx.From(c.Request.Context())`. It carries `request_id` and, after `requireUser`, `user_id`; money endpoints add `idempotency_key`. Errors go in as `logx.Err(err)`. Don't use the `log` package or `fmt.Print` in the server.
+- **Request ids:** `RequestLogger` writes one access line per request (method, route template, status, duration, response size, client IP truncated to /24 or /48). It accepts the client's `X-Request-ID` when it's well-formed, otherwise generates one, and always returns it, so an error a user reports can be found. The app keeps it on `ApiError.requestId`.
+- **Events logged:** sign-in outcomes, auth rejections (reason only), `payment completed` / `payment declined` (transaction, merchant id, amount, cash back and reason), `campaign ended: budget used up`, `redemption completed` / `declined`, every idempotency decision (Redis replay, in-progress, key reused, database-backstop replay at **warn**, Redis unavailable at **error**), and panics with stack traces. When adding a money-moving endpoint, log its outcome the same way.
+- **Never log:**
+  - request or response bodies, or headers
+  - balances
+  - passwords, tokens, or the `X-User-ID` header (the demo credential)
+  - raw emails
+  - connection strings with credentials
+
+  `logx` redacts by key (`password`, `authorization`, `token`, `x-user-id`, …), masks `email` values (`a***@e***.com`), and scrubs every string and error for URLs with passwords, `key=value` secrets, bearer tokens and email addresses. That's a safety net, not permission. `logging_test.go` and `internal/logx` tests check it; add a case when you add a new kind of sensitive data.
+- **Allowed:** ids (user, transaction, campaign, idempotency key, request), merchant ids, amounts and currencies, reasons and status codes.
 
 ## Database changes
 

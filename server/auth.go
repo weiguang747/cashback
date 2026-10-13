@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"log"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"cashback/server/internal/httpx"
+	"cashback/server/internal/logx"
 )
 
 type signInRequest struct {
@@ -38,16 +38,20 @@ func signIn(s store) gin.HandlerFunc {
 			return
 		}
 
-		row, err := s.GetUserByEmail(c.Request.Context(), email)
+		ctx := c.Request.Context()
+		row, err := s.GetUserByEmail(ctx, email)
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Masked by logx: enough to spot a typo or repeated guessing.
+			logx.From(ctx).Info("sign in rejected", "reason", "unknown_email", "email", email)
 			httpx.Error(c, http.StatusUnauthorized, "no account for this email")
 			return
 		}
 		if err != nil {
-			log.Printf("get user by email: %v", err)
+			logx.From(ctx).Error("get user by email failed", logx.Err(err))
 			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
 			return
 		}
+		logx.From(ctx).Info("signed in", "user_id", row.ID)
 
 		c.JSON(http.StatusOK, signInResponse{User: user{ID: row.ID, Email: row.Email, Name: row.Name}})
 	}

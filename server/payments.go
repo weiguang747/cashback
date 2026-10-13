@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"cashback/server/internal/db"
 	"cashback/server/internal/httpx"
 	"cashback/server/internal/idempotency"
+	"cashback/server/internal/logx"
 	"cashback/server/internal/money"
 )
 
@@ -81,7 +81,7 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			log.Printf("get main account: %v", err)
+			logx.From(c.Request.Context()).Error("get main account failed", logx.Err(err))
 			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
 			return
 		}
@@ -101,15 +101,29 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 				MerchantName:   req.MerchantName,
 				IdempotencyKey: key,
 			})
+			log := logx.From(c.Request.Context()).With("merchant_id", req.MerchantID, "amount_minor", amount, "currency", account.Currency)
 			switch {
 			case errors.Is(err, database.ErrInsufficientFunds):
+				log.Info("payment declined", "reason", "insufficient_funds")
 				return outcome{Status: http.StatusUnprocessableEntity, Body: httpx.ErrorResponse{
 					Code: "insufficient_funds", Error: "you don't have enough balance for this payment"}}, nil
 			case errors.Is(err, database.ErrKeyReused):
+				log.Warn("payment declined", "reason", "idempotency_key_reused")
 				return keyReused, nil
 			case err != nil:
 				return outcome{}, err
 			}
+
+			// Balances are deliberately not logged; ids and amounts are enough
+			// to trace a payment, and the database has the rest.
+			attrs := []any{"transaction_id", result.Transaction.ID, "replayed", result.Replayed}
+			if cb := result.Cashback; cb != nil {
+				attrs = append(attrs, "campaign_id", cb.CampaignID, "cashback_minor", cb.AmountMinor, "cashback_reason", string(cb.Reason))
+				if cb.CampaignEnded {
+					log.Info("campaign ended: budget used up", "campaign_id", cb.CampaignID)
+				}
+			}
+			log.Info("payment completed", attrs...)
 
 			m := func(minor int64) money.Money {
 				return money.Money{Minor: minor, Currency: account.Currency, Exponent: int(account.MinorUnit)}

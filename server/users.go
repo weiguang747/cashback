@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -10,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"cashback/server/internal/httpx"
+	"cashback/server/internal/logx"
 )
 
 type user struct {
@@ -27,25 +27,36 @@ const userKey = "user"
 // them. Replace this one function with a token check when real auth lands.
 func requireUser(s store) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		ctx := c.Request.Context()
 		id := c.GetHeader("X-User-ID")
 		// Check the format first so a bad value can't reach Postgres as a 500.
+		// The header is the demo credential, so it's never logged when rejected.
 		if _, err := uuid.Parse(id); err != nil {
+			reason := "malformed_user_id"
+			if id == "" {
+				reason = "missing_user_id"
+			}
+			logx.From(ctx).Warn("auth rejected", "reason", reason)
 			httpx.Error(c, http.StatusUnauthorized, "sign in required")
 			return
 		}
 
-		row, err := s.GetUser(c.Request.Context(), id)
+		row, err := s.GetUser(ctx, id)
 		if errors.Is(err, pgx.ErrNoRows) {
+			logx.From(ctx).Warn("auth rejected", "reason", "unknown_user")
 			httpx.Error(c, http.StatusUnauthorized, "sign in required")
 			return
 		}
 		if err != nil {
-			log.Printf("get user: %v", err)
+			logx.From(ctx).Error("get user failed", logx.Err(err))
 			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
 			return
 		}
 
 		c.Set(userKey, user{ID: row.ID, Email: row.Email, Name: row.Name})
+		// Every later log line for this request, including the access log,
+		// says whose request it was.
+		httpx.AddToLogger(c, "user_id", row.ID)
 		c.Next()
 	}
 }

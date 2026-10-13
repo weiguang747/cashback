@@ -37,10 +37,3 @@ func UseJSONErrors(r *gin.Engine) {
 		Error(c, http.StatusMethodNotAllowed, "method not allowed")
 	})
 }
-
-// Recovery returns a 500 JSON error instead of an empty body when a handler panics.
-func Recovery() gin.HandlerFunc {
-	return gin.CustomRecovery(func(c *gin.Context, _ any) {
-		Error(c, http.StatusInternalServerError, "something went wrong")
-	})
-}

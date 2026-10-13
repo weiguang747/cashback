@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"cashback/server/internal/httpx"
 	"cashback/server/internal/idempotency"
+	"cashback/server/internal/logx"
 )
 
 // idempotencyKey reads the required Idempotency-Key header, responding 400
@@ -38,25 +38,31 @@ type outcome struct {
 // case where Redis loses the key. An error from run is unexpected: the key
 // is released so the client can retry.
 func runIdempotent(c *gin.Context, idem idempotency.Store, key, fingerprint string, run func() (outcome, error)) {
+	// The key is a random id, not a secret; it ties retries together.
+	httpx.AddToLogger(c, "idempotency_key", key)
 	ctx := c.Request.Context()
+	log := logx.From(ctx)
 	scope := currentUser(c).ID
 
 	begin, err := idem.Begin(ctx, scope, key, fingerprint)
 	if err != nil {
 		// Fail closed: never move money without the duplicate guard.
-		log.Printf("idempotency begin: %v", err)
+		log.Error("idempotency store unavailable; refusing request", logx.Err(err))
 		httpx.ErrorCode(c, http.StatusServiceUnavailable, "unavailable", "this is unavailable right now, please try again")
 		return
 	}
 	switch begin.Outcome {
 	case idempotency.Replay:
+		log.Info("idempotent replay", "source", "redis", "replayed_status", begin.Response.Status)
 		c.Header("Idempotent-Replayed", "true")
 		c.Data(begin.Response.Status, gin.MIMEJSON, begin.Response.Body)
 		return
 	case idempotency.InProgress:
+		log.Warn("idempotency key in progress; rejecting concurrent duplicate")
 		httpx.ErrorCode(c, http.StatusConflict, "in_progress", "this request is already being processed")
 		return
 	case idempotency.Mismatch:
+		log.Warn("idempotency key reused with a different request")
 		httpx.ErrorCode(c, http.StatusUnprocessableEntity, "idempotency_key_reused", "this Idempotency-Key was already used for a different request")
 		return
 	}
@@ -66,9 +72,10 @@ func runIdempotent(c *gin.Context, idem idempotency.Store, key, fingerprint stri
 
 	out, err := run()
 	if err != nil {
-		log.Printf("%s %s: %v", c.Request.Method, c.FullPath(), err)
+		log.Error("request failed; idempotency key released for retry", logx.Err(err))
 		if err := idem.Release(bg, scope, key); err != nil {
-			log.Printf("idempotency release: %v", err)
+			// The key stays locked until its pending TTL expires.
+			log.Error("idempotency release failed", logx.Err(err))
 		}
 		httpx.Error(c, http.StatusInternalServerError, "something went wrong")
 		return
@@ -76,16 +83,19 @@ func runIdempotent(c *gin.Context, idem idempotency.Store, key, fingerprint stri
 
 	raw, err := json.Marshal(out.Body)
 	if err != nil {
-		log.Printf("encode response: %v", err)
+		log.Error("encode response failed", logx.Err(err))
 		httpx.Error(c, http.StatusInternalServerError, "something went wrong")
 		return
 	}
 	// A failed cache write is only logged: the database's unique key still
 	// stops a retry from moving money twice.
 	if err := idem.Complete(bg, scope, key, fingerprint, idempotency.Response{Status: out.Status, Body: raw}); err != nil {
-		log.Printf("idempotency complete: %v", err)
+		log.Error("idempotency complete failed; database backstop will cover retries", logx.Err(err))
 	}
 	if out.Replayed {
+		// Redis didn't know the key but Postgres did: Redis lost it (flush,
+		// eviction, or a crash between commit and cache write). Worth noticing.
+		log.Warn("idempotent replay", "source", "database")
 		c.Header("Idempotent-Replayed", "true")
 	}
 	c.Data(out.Status, gin.MIMEJSON, raw)

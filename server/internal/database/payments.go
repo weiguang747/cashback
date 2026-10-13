@@ -47,6 +47,8 @@ type CashbackResult struct {
 	CampaignID  string
 	AmountMinor int64 // 0 when Reason says why nothing was earned
 	Reason      cashback.Reason
+	// CampaignEnded is true when this award used up the campaign's budget.
+	CampaignEnded bool
 }
 
 // Pay debits the account, records the payment and awards any campaign
@@ -195,6 +197,7 @@ func awardCashback(ctx context.Context, q *db.Queries, p PayParams, paymentID st
 		if err := q.CloseCampaign(ctx, db.CloseCampaignParams{ID: campaign.ID, At: now}); err != nil {
 			return nil, fmt.Errorf("end campaign: %w", err)
 		}
+		result.CampaignEnded = true
 	}
 	return result, nil
 }

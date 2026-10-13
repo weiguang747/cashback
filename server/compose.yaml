@@ -37,6 +37,8 @@ services:
       PORT: "8080"
       DATABASE_URL: postgres://cashback:cashback@db:5432/cashback?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      # debug, info, warn or error. Logs are JSON on stdout, with secrets redacted.
+      LOG_LEVEL: info
     depends_on:
       db:
         condition: service_healthy

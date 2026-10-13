@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -12,6 +11,7 @@ import (
 	"cashback/server/internal/db"
 	"cashback/server/internal/httpx"
 	"cashback/server/internal/idempotency"
+	"cashback/server/internal/logx"
 	"cashback/server/internal/money"
 )
 
@@ -60,7 +60,7 @@ func redeemCashback(s store, idem idempotency.Store) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			log.Printf("get cash back account: %v", err)
+			logx.From(c.Request.Context()).Error("get cash back account failed", logx.Err(err))
 			httpx.Error(c, http.StatusInternalServerError, "something went wrong")
 			return
 		}
@@ -75,15 +75,19 @@ func redeemCashback(s store, idem idempotency.Store) gin.HandlerFunc {
 			result, err := s.Redeem(ctx, database.RedeemParams{
 				UserID: user.ID, Currency: cur, AmountMinor: amount, IdempotencyKey: key,
 			})
+			log := logx.From(c.Request.Context()).With("amount_minor", amount, "currency", cur)
 			switch {
 			case errors.Is(err, database.ErrInsufficientFunds):
+				log.Info("redemption declined", "reason", "insufficient_funds")
 				return outcome{Status: http.StatusUnprocessableEntity, Body: httpx.ErrorResponse{
 					Code: "insufficient_funds", Error: "you don't have that much cash back to redeem"}}, nil
 			case errors.Is(err, database.ErrKeyReused):
+				log.Warn("redemption declined", "reason", "idempotency_key_reused")
 				return keyReused, nil
 			case err != nil:
 				return outcome{}, err
 			}
+			log.Info("redemption completed", "transaction_id", result.Transaction.ID, "replayed", result.Replayed)
 
 			m := func(minor int64) money.Money {
 				return money.Money{Minor: minor, Currency: cur, Exponent: int(result.MinorUnit)}
