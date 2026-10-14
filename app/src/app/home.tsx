@@ -1,6 +1,6 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useRef } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button, EmptyState, Screen, SectionHeader, Spinner, Text, Tile, TransactionRow } from '@/components';
 import { CashbackBanner } from '@/features/cashback/CashbackBanner';
@@ -18,7 +18,7 @@ const RECENT_COUNT = 6;
 export default function HomeScreen() {
   const user = useUser();
   const accounts = useAccounts();
-  const { data: campaign, refresh: refreshCampaign } = useCampaign();
+  const { data: campaign, refresh: refreshCampaign, reload: reloadCampaign } = useCampaign();
   const { data: transactions, error, loading, reload, refresh: refreshTransactions } = useRecentTransactions(RECENT_COUNT);
 
   // Refresh when coming back to Home. Paying or redeeming already put the
@@ -39,6 +39,16 @@ export default function HomeScreen() {
     }, [refreshAccounts, refreshCampaign, refreshTransactions]),
   );
 
+  // Pull to refresh fetches everything on Home again, whether or not it's
+  // fresh, and keeps the spinner up until all of it has answered. A failed
+  // fetch keeps the data on screen with its error, as on any reload.
+  const reloadAccounts = accounts.reload;
+  const [pulling, setPulling] = useState(false);
+  const pullToRefresh = useCallback(() => {
+    setPulling(true);
+    Promise.all([reloadAccounts(), reloadCampaign(), reload()]).finally(() => setPulling(false));
+  }, [reloadAccounts, reloadCampaign, reload]);
+
   const name = user?.name ?? '';
   const initials = name
     .split(/\s+/)
@@ -52,7 +62,11 @@ export default function HomeScreen() {
 
   return (
     <Screen padded={false}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={pulling} onRefresh={pullToRefresh} />}
+      >
         <View style={styles.header}>
           <View style={styles.user}>
             <Tile tone="positive" size={44} radius={22} label={name}>
