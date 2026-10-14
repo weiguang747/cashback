@@ -136,7 +136,9 @@ function queryString(params: Record<string, string | number | null | undefined>)
  * first result instead of charging again.
  */
 export async function createPayment(input: PaymentInput, idempotencyKey: string): Promise<Payment> {
-  const data = await post<{ payment: Payment }>('/v1/payments', input, { 'Idempotency-Key': idempotencyKey });
+  const data = await withRetry(() =>
+    post<{ payment: Payment }>('/v1/payments', input, { 'Idempotency-Key': idempotencyKey }),
+  );
   return data.payment;
 }
 
@@ -156,7 +158,9 @@ export type Redemption = {
  * idempotency key when retrying so cash back is never moved twice.
  */
 export async function redeemCashback(amount: Money, idempotencyKey: string): Promise<Redemption> {
-  const data = await post<{ redemption: Redemption }>('/v1/cashback/redeem', { amount }, { 'Idempotency-Key': idempotencyKey });
+  const data = await withRetry(() =>
+    post<{ redemption: Redemption }>('/v1/cashback/redeem', { amount }, { 'Idempotency-Key': idempotencyKey }),
+  );
   return data.redemption;
 }
 
@@ -183,6 +187,42 @@ export class ApiError extends Error {
 function logFailure(method: string, path: string, e: ApiError) {
   if (!__DEV__) return;
   console.warn(`[api] ${method} ${path.split('?')[0]} failed: ${e.status || 'network'} ${e.code ?? ''} (request ${e.requestId ?? 'none'})`);
+}
+
+/**
+ * Money-moving requests retry by themselves, with the same Idempotency-Key,
+ * when the failure is likely brief: the server was busy or unreachable, or
+ * is still processing the key. Waits use exponential backoff with full
+ * jitter, so phones that failed together don't all retry together and keep
+ * an overloaded server overloaded.
+ *
+ * Not retried: our own timeout (the user has already waited TIMEOUT_MS, so
+ * the failure screen offers a retry instead), 500s (likely a bug, not load)
+ * and every definite answer such as insufficient_funds.
+ */
+const RETRY = { attempts: 3, baseMs: 500, capMs: 4_000 };
+
+function isRetryable(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false;
+  if (e.status === 0) return e.code !== 'timeout';
+  if (e.status === 409) return e.code === 'in_progress';
+  return e.status === 502 || e.status === 503 || e.status === 504;
+}
+
+/** A random wait between 0 and min(cap, base · 2^retry). */
+function backoffMs(retry: number, random: () => number = Math.random): number {
+  return Math.floor(random() * Math.min(RETRY.capMs, RETRY.baseMs * 2 ** retry));
+}
+
+async function withRetry<T>(send: () => Promise<T>): Promise<T> {
+  for (let retry = 0; ; retry++) {
+    try {
+      return await send();
+    } catch (e) {
+      if (retry + 1 >= RETRY.attempts || !isRetryable(e)) throw e;
+      await new Promise((resolve) => setTimeout(resolve, backoffMs(retry)));
+    }
+  }
 }
 
 function post<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {

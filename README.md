@@ -387,7 +387,8 @@ One limit of the backstop: the reason a payment earned *nothing* isn't stored, s
 
 **On the app side** ([`pay.tsx`](app/src/app/pay.tsx)), the key lives in a `useRef` tied to the amount:
 
-- Unknown outcome (network error, 5xx, `in_progress`): keep the key; "Try again" reuses it.
+- Brief failures (connection lost, `502`/`503`/`504`, `in_progress`) are retried automatically with the same key, up to 3 attempts, waiting a random time up to 0.5 s, then 1 s (exponential backoff with full jitter, capped at 4 s), so phones that failed together don't retry together.
+- Unknown outcome after that (or the app's own 15 s timeout, which isn't retried automatically): keep the key; "Try again" reuses it.
 - Definite decline (`insufficient_funds`): drop the key; the next attempt is a new request.
 - Amount changed: new key.
 
