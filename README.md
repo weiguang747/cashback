@@ -16,10 +16,11 @@ cd server && docker compose up -d --build          # API :8080, Postgres :5432, 
 DATABASE_URL='postgres://cashback:cashback@localhost:5432/cashback?sslmode=disable' go run ./cmd/seed
 go run ./cmd/campaign create --name "Launch 5%" --currency IDR --rate-bps 500 \
   --min 20000 --daily-cap 50000 --budget 10000000 --round-to 1 --starts-at now
+go run ./cmd/campaign gate <campaign-id> redis      # optional: enforce the budget in Redis
 cd ../app && npx expo start                        # Metro :8081, open in Expo Go
 ```
 
-Demo users: `andi@example.com`, `sarah@example.com`, `budi@example.com` (no password). Without a live campaign, payments earn no cash back.
+Demo users: `andi@example.com`, `sarah@example.com`, `budi@example.com` (no password). Without a live campaign, payments earn no cash back. Campaigns enforce their budget under a database lock by default; see [Redis budget gate](#redis-budget-gate) for the faster mode.
 
 ---
 
@@ -71,12 +72,13 @@ All app endpoints are under `/v1`. Request and response bodies are JSON.
 {
   "accounts": [
     { "id": "…", "kind": "main",     "balance": { "value": "12450000.00", "currency": "IDR" } },
-    { "id": "…", "kind": "cashback", "balance": { "value": "3250.00",     "currency": "IDR" } }
+    { "id": "…", "kind": "cashback", "balance": { "value": "3250.00",     "currency": "IDR" },
+                                     "pending": { "value": "1750.00",     "currency": "IDR" } }
   ]
 }
 ```
 
-System accounts (campaign budgets, funding) are never returned.
+`pending` (cash back accounts only) is cash back earned through the [Redis budget gate](#redis-budget-gate) but not yet credited to `balance`; the worker credits it within moments. It can't be redeemed until then. System accounts (campaign budgets, funding) are never returned.
 
 #### `GET /v1/transactions?limit=20&cursor=…&kind=out&q=kopi`
 
@@ -113,12 +115,17 @@ Headers: `X-User-ID`, `Idempotency-Key`.
                      "amount": { "value": "-35000.00", "currency": "IDR" },
                      "cashback": { "value": "1750.00", "currency": "IDR" }, "…": "…" },
     "balance":  { "value": "12415000.00", "currency": "IDR" },
-    "cashback": { "amount": { "value": "1750.00", "currency": "IDR" }, "reason": "awarded" }
+    "cashback": { "amount": { "value": "1750.00", "currency": "IDR" }, "reason": "awarded", "status": "credited" }
   }
 }
 ```
 
-`cashback` is `null` when no campaign is live. Otherwise `reason` is one of `awarded`, `below_minimum`, `daily_cap_reached`, `budget_exhausted` (see [How a campaign works](#how-a-cash-back-campaign-works)). Merchants are not stored server-side; the id and name come from the request.
+`cashback` is `null` when no campaign is live. Otherwise:
+
+- `reason` is one of `awarded`, `below_minimum`, `daily_cap_reached`, `budget_exhausted` (see [How a campaign works](#how-a-cash-back-campaign-works)), or `unavailable`: the Redis gate couldn't check the budget, so the payment went ahead without cash back.
+- `status` is `credited` (already in the cash back balance, or nothing earned) or `pending` (reserved by the [Redis budget gate](#redis-budget-gate), credited moments later). A replayed response is the original, so it can still say `pending`.
+
+Merchants are not stored server-side; the id and name come from the request.
 
 | Status | `code` | When |
 |---|---|---|
@@ -186,18 +193,19 @@ Headers: `X-User-ID`, `Idempotency-Key`. The app sends the full balance it displ
   "redemption": {
     "transaction":     { "kind": "cashback", "amount": { "value": "3250.00", "currency": "IDR" }, "…": "…" },
     "balance":         { "value": "12418250.00", "currency": "IDR" },
-    "cashbackBalance": { "value": "0.00",        "currency": "IDR" }
+    "cashbackBalance": { "value": "0.00",        "currency": "IDR" },
+    "cashbackPending": { "value": "0.00",        "currency": "IDR" }
   }
 }
 ```
 
-Errors mirror payments (`insufficient_funds` here means more than the cash back balance).
+Errors mirror payments (`insufficient_funds` here means more than the cash back balance; pending cash back doesn't count).
 
 ---
 
 ## Database design
 
-PostgreSQL, with every schema change a [goose](https://github.com/pressly/goose) migration in [`server/migrations/`](server/migrations), applied on startup. Before the first release the development migrations were squashed into one, `00001_init.sql`. SQL is hand-written in [`server/queries/`](server/queries) and compiled to typed Go by sqlc.
+PostgreSQL, with every schema change a [goose](https://github.com/pressly/goose) migration in [`server/migrations/`](server/migrations), applied on startup. Before the first release the development migrations were squashed into one, `00001_init.sql`; `00003_budget_gate.sql` adds the Redis budget gate. SQL is hand-written in [`server/queries/`](server/queries) and compiled to typed Go by sqlc.
 
 ```mermaid
 erDiagram
@@ -208,6 +216,8 @@ erDiagram
     campaigns ||--o{ cashback_awards : "pays"
     users ||--o{ cashback_awards : "earns"
     transactions ||--o| cashback_awards : "payment / debit / credit"
+    transactions ||--o| cashback_pending : "payment"
+    users ||--o{ cashback_pending : "is owed"
 
     currencies {
         char3 code PK
@@ -246,6 +256,17 @@ erDiagram
         text timezone
         timestamptz starts_at
         timestamptz ends_at
+        text budget_gate "db, shadow or redis"
+        timestamptz gate_degraded_at
+    }
+    cashback_pending {
+        uuid payment_transaction_id PK
+        uuid campaign_id "no FK, on purpose"
+        uuid user_id FK
+        uuid cashback_account_id FK
+        bigint amount_minor
+        date campaign_day
+        timestamptz failed_at
     }
     cashback_awards {
         uuid id PK
@@ -269,6 +290,7 @@ erDiagram
 | `transactions` | The ledger. Every change to a balance is a row here. `kind` is `in`, `out` or `cashback`. |
 | `campaigns` | Cash back rules, the campaign's budget account, its time zone and active window. |
 | `cashback_awards` | Links one payment to the two transactions that paid its cash back, with the campaign day for the daily cap. |
+| `cashback_pending` | The outbox of the Redis gate: awards reserved by a payment and not yet credited. A row moves to `cashback_awards` in one transaction, so an award is always in exactly one of the two. |
 
 ### Design decisions
 
@@ -290,7 +312,9 @@ erDiagram
 |---|---|
 | Launch campaign | `funding` −budget, `campaign` +budget; `campaigns` row |
 | Payment | main account `out` −amount (with idempotency key) |
-| …with cash back | `campaign` `out` −award, user `cashback` +award, `cashback_awards` row; if the budget hits 0, `campaigns.ends_at` is set |
+| …with cash back (`db` gate) | `campaign` `out` −award, user `cashback` +award, `cashback_awards` row; if the budget hits 0, `campaigns.ends_at` is set |
+| …with cash back (`redis` gate) | a `cashback_pending` row (the budget is reserved in Redis first) |
+| Award worker, per batch | for each campaign: `campaign` `out` −total, each user `cashback` +their awards, `cashback_awards` rows; pending rows deleted; `ends_at` set if the budget hits 0 |
 | Redemption | user `cashback` `out` −amount, main `cashback` +amount (both with the idempotency key) |
 | End campaign | leftover `campaign` → `funding`; `ends_at` set |
 
@@ -384,7 +408,7 @@ One limit of the backstop: the reason a payment earned *nothing* isn't stored, s
 **Lifecycle** (managed with [`server/cmd/campaign`](server/cmd/campaign/main.go); there's no admin API yet):
 
 1. **Launch** (`campaign create`): creates a `campaign` account and moves the budget into it from the currency's `funding` account, double-entry. The exclusion constraint rejects an overlapping campaign in the same currency.
-2. **Award** (inside every payment, in the payment's DB transaction):
+2. **Award** (inside every payment, in the payment's DB transaction; this is the default `db` gate, see [Redis budget gate](#redis-budget-gate) for the other):
    1. Lock the campaign live at the payment time (`SELECT … FOR UPDATE`), and compute the payment's **campaign day**: `(now AT TIME ZONE timezone)::date`, in Postgres, from the server clock.
    2. Sum the user's awards for that campaign day, and read the budget (the campaign account's balance).
    3. Run `cashback.Award` (rate → rounding → min spend → daily cap → budget).
@@ -396,7 +420,56 @@ One limit of the backstop: the reason a payment earned *nothing* isn't stored, s
 
 **What the user sees:** `GET /v1/cashback/campaign` returns the rate, minimum, cap, `earnedToday`, budget remaining and `resetAt`. Each payment response tells them what they earned and, if nothing, why. Earned cash back accumulates in the cash back account until they redeem it into their main balance.
 
-**Known limit:** every awarding payment locks the single campaign row. That's fine for hundreds of awards per second; beyond that, shorten the lock or shard the budget across several accounts.
+**Known limit of the `db` gate:** every awarding payment locks the single campaign row, so awards in a currency run one at a time (about 1,500 awarding payments a second locally with 32 payers). The [Redis budget gate](#redis-budget-gate) takes that lock off the payment path.
+
+### Redis budget gate
+
+Each campaign has a **budget gate** (`campaigns.budget_gate`) that decides how its budget is enforced:
+
+| Gate | How a payment awards cash back | Response `status` |
+|---|---|---|
+| `db` (default) | Under the campaign row lock, in the payment's DB transaction (above) | `credited` |
+| `shadow` | As `db`, and each award is mirrored into Redis afterwards to compare; disagreements are logged, nothing acts on Redis | `credited` |
+| `redis` | Reserves the award in Redis and records it in `cashback_pending`, **without the campaign lock**; a worker credits it moments later | `pending` |
+
+Switch with `go run ./cmd/campaign gate <id> db|shadow|redis` (it needs `REDIS_URL`); `campaign list` shows each campaign's gate. The usual rollout is `db` → `shadow` (watch for `budget gate disagreement` in the logs) → `redis`.
+
+**The database stays the source of truth.** What's left of a budget is the campaign account's balance minus pending awards. Redis only holds a counter in front of it, so the hard guarantee doesn't depend on Redis: the worker's debit of the campaign account is conditional, exactly as in `db` mode.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant API
+    participant Redis
+    participant Postgres
+    participant Worker
+    App->>API: POST /v1/payments
+    API->>Postgres: BEGIN → debit main account → INSERT payment
+    API->>Redis: reserve (Lua): grant min(award, left), DECRBY, record in flight
+    API->>Postgres: INSERT cashback_pending → COMMIT
+    API-->>App: 201, cashback status "pending"
+    Worker->>Postgres: claim pending (SKIP LOCKED) → lock campaign → credit batch → delete pending → COMMIT
+```
+
+**Reserving** is one Lua script, so it's atomic: it refuses a payment id it has already seen, grants the award or whatever is left (rounded down to the increment, so the budget ends at exactly zero, as in `db` mode), decrements the counter and records the reservation as in flight. Its keys share a `{campaignId}` hash tag (`campaign:{id}:remaining`, `:grant:<payment>`, `:inflight`), so each script touches one Redis Cluster slot. The daily cap still comes from Postgres and counts pending awards; a user's payments already run one at a time on their main account lock.
+
+**Crediting.** The award worker runs in every server (`CASHBACK_WORKER=off` disables it) and shares the queue through `FOR UPDATE SKIP LOCKED`. Each batch of up to 100 awards is one statement per campaign: one debit of the total, one credit per cash back account, all the ledger and award rows. It drains about 11,000 awards a second while 32 payers run, ahead of the ~6,000 payments a second the gate allows. An award the campaign account can't cover is marked failed and kept (still counted against the budget) for someone to resolve. The worker logs at error when pending awards are more than 30 s old, or any have failed.
+
+**Failure handling:**
+
+- **Redis slow or down:** a reservation gets 50 ms. On an error or timeout the payment goes ahead with no cash back (`reason: "unavailable"`) and gives back anything Redis may have taken. A payment never fails because of the gate. (A full Redis outage still returns `503` earlier, at the idempotency layer.)
+- **Repeated failures:** five in 10 s on one server **degrade** the campaign. Payments then earn nothing for 15 s, the longest a payment that reserved earlier can still be committing, and after that award under the campaign lock, as in `db` mode. Once Redis answers again, the reconciler reseeds the counter under the campaign lock and switches back.
+- **Rolled-back payments** release their reservation. A payment whose `COMMIT` itself errored keeps it, because the commit may have happened; the reconciler decides from the database.
+
+**The reconciler** runs every 5 s in each server, one at a time per campaign. It reads Redis, then the database in one `REPEATABLE READ` snapshot, then Redis again. Because only the reconciler removes committed reservations from the in-flight list, that gives the counter's exact drift even under load. It corrects drift with `INCRBY` (logged as `budget gate drift`), and releases reservations older than 15 s that never reached the database. Run one pass by hand with `go run ./cmd/campaign reconcile <id>`.
+
+**Switching safely.** Going to `shadow` or `redis` seeds the counter with the campaign locked, so no award can happen in between. Going back to `db` closes the counter (payments briefly get `unavailable`), waits until every reservation has committed or been released, then switches under the lock. Pending awards keep draining. Ending a gated campaign switches it to `db` first and returns only the budget that isn't owed to pending awards.
+
+**Trade-offs:**
+
+- Cash back from a `redis` campaign reaches the cash back balance moments after the payment. The app says it's on its way, and shows it as pending on Home.
+- In `redis` mode the campaign ends when the worker credits its last award, not in the payment that reserved it. Payments in that moment get `budget_exhausted` rather than `cashback: null`.
+- One hot campaign is still one Redis counter. The payment code uses a small `Gate` interface, so the budget can later be sharded across several counters.
 
 ---
 
@@ -468,6 +541,6 @@ TEST_REDIS_URL=redis://localhost:6379/15 go test ./...
 npx expo lint && npx tsc --noEmit
 ```
 
-## Not built yet
+## Out of scope
 
 Real authentication, an admin API for campaigns, refunds and cash back clawback, double-entry seed balances, CI, and translated UI strings.

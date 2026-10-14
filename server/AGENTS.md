@@ -171,6 +171,6 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 - Budget gate tests (`gate_test.go`, `internal/budgetgate`) need `TEST_REDIS_URL` too. Use `newGateEnv` and `launchGated`, call `creditAll` to run the worker, and check `assertNoDrift` (counter = database) as well as `assertLedger`. Give concurrent payments unique idempotency keys: `UnixNano()` alone repeats within a microsecond on macOS, and a repeated key replays instead of paying.
 - If a test run panics, its cleanups don't run and a live test campaign can block every later launch (`campaigns_no_overlap`). Recreate `cashback_test`.
 
-## Not built yet
+## Out of scope
 
 Real auth tokens; an admin API for campaigns (including switching gates); refunds and cash back clawback (out of scope for the budget gate: nothing returns an award once credited); double-entry seed balances (from a top-up account); CI. When you build one of these, update this file.
