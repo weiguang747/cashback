@@ -6,6 +6,7 @@
 -- Never use REAL/DOUBLE PRECISION (inexact) or MONEY (depends on lc_monetary).
 
 CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Currencies the app can hold money in. minor_unit is the ISO 4217 number
 -- of decimal places, so amounts can be stored as integers of the minor unit.
@@ -73,6 +74,12 @@ CREATE TABLE transactions (
 );
 -- Lists and their cursor paging: one account's rows, newest first.
 CREATE INDEX transactions_account_created_at_idx ON transactions (account_id, created_at DESC, id DESC);
+-- Searching by name (?q= on /v1/transactions) is an ILIKE '%text%', which no
+-- btree can serve: for a rare term the list query would walk the user's whole
+-- history. A trigram index finds the matches directly. SearchTransactions is
+-- always planned with the actual search text (see pgStore.SearchTransactions),
+-- so short or common terms still walk the index above instead.
+CREATE INDEX transactions_name_trgm_idx ON transactions USING gin (name gin_trgm_ops);
 
 -- Cash back campaigns, recorded double-entry. Each campaign's budget lives
 -- in a system-owned "campaign" account, funded at launch from the
@@ -97,6 +104,16 @@ CREATE TABLE campaigns (
     -- NULL while open; set when ended by hand or when the budget runs out.
     ends_at               TIMESTAMPTZ,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- How the budget is enforced (see internal/budgetgate):
+    --   db      awards under the campaign row lock, inside the payment
+    --   shadow  as db, and mirrors each award into Redis to compare decisions
+    --   redis   reserves the award in Redis; a worker credits it from cashback_pending
+    budget_gate           TEXT        NOT NULL DEFAULT 'db'
+        CONSTRAINT campaigns_budget_gate_check CHECK (budget_gate IN ('db', 'shadow', 'redis')),
+    -- Set when the Redis gate keeps failing: payments then fall back to the
+    -- lock (after a grace period) until the reconciler reseeds Redis and
+    -- clears it.
+    gate_degraded_at      TIMESTAMPTZ,
     FOREIGN KEY (account_id, currency) REFERENCES accounts (id, currency),
     CHECK (ends_at IS NULL OR ends_at > starts_at),
     -- At most one campaign per currency at any moment; later ones can be scheduled.
@@ -120,7 +137,44 @@ CREATE TABLE cashback_awards (
 );
 CREATE INDEX cashback_awards_daily_idx ON cashback_awards (campaign_id, user_id, campaign_day);
 
+-- Awards reserved by the Redis gate and not yet credited: the outbox that
+-- the award worker drains. A row is inserted in the payment's transaction
+-- and deleted in the same transaction that writes its cashback_awards row,
+-- so an award is always in exactly one of the two tables.
+--
+-- The budget left is the campaign account balance minus these rows.
+CREATE TABLE cashback_pending (
+    -- One award per payment, like cashback_awards.
+    payment_transaction_id UUID        PRIMARY KEY REFERENCES transactions (id),
+    -- No foreign key to campaigns on purpose: checking it takes a KEY SHARE
+    -- lock on the campaign row, which every awarding payment would then
+    -- contend on, the very lock the gate exists to avoid. Campaigns are
+    -- never deleted.
+    campaign_id            UUID        NOT NULL,
+    user_id                UUID        NOT NULL REFERENCES users (id),
+    cashback_account_id    UUID        NOT NULL,
+    currency               CHAR(3)     NOT NULL,
+    amount_minor           BIGINT      NOT NULL CHECK (amount_minor > 0),
+    -- The payment's calendar day in the campaign's time zone (for the daily cap).
+    campaign_day           DATE        NOT NULL,
+    credit_description     TEXT        NOT NULL,
+    created_at             TIMESTAMPTZ NOT NULL,
+    -- The worker counts failed tries; failed_at is set when the award can
+    -- never be written (the campaign account can't cover it). Such a row
+    -- stays, still counted against the budget, until resolved by hand.
+    attempts               INT         NOT NULL DEFAULT 0,
+    failed_at              TIMESTAMPTZ,
+    FOREIGN KEY (cashback_account_id, currency) REFERENCES accounts (id, currency)
+);
+-- Daily cap and budget sums (per campaign, user and day; per campaign).
+CREATE INDEX cashback_pending_daily_idx ON cashback_pending (campaign_id, user_id, campaign_day);
+-- The pending amount shown with a user's cash back balance.
+CREATE INDEX cashback_pending_account_idx ON cashback_pending (cashback_account_id);
+-- The worker claims the oldest rows that haven't failed.
+CREATE INDEX cashback_pending_queue_idx ON cashback_pending (created_at) WHERE failed_at IS NULL;
+
 -- +goose Down
+DROP TABLE cashback_pending;
 DROP TABLE cashback_awards;
 DROP TABLE campaigns;
 DROP TABLE transactions;

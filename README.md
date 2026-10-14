@@ -205,7 +205,7 @@ Errors mirror payments (`insufficient_funds` here means more than the cash back 
 
 ## Database design
 
-PostgreSQL, with every schema change a [goose](https://github.com/pressly/goose) migration in [`server/migrations/`](server/migrations), applied on startup. Before the first release the development migrations were squashed into one, `00001_init.sql`; `00003_budget_gate.sql` adds the Redis budget gate. SQL is hand-written in [`server/queries/`](server/queries) and compiled to typed Go by sqlc.
+PostgreSQL, with every schema change a [goose](https://github.com/pressly/goose) migration in [`server/migrations/`](server/migrations), applied on startup. Before the first release the development migrations were squashed into one, `00001_init.sql`. SQL is hand-written in [`server/queries/`](server/queries) and compiled to typed Go by sqlc.
 
 ```mermaid
 erDiagram
