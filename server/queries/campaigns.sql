@@ -6,16 +6,32 @@
 -- from one budget (and ending the campaign) happen one at a time.
 --
 -- Locking both rows matters: if this waits for another payment, Postgres
--- re-reads the locked rows once it gets them, so budget_minor is current.
+-- re-reads the locked rows once it gets them, so budget_minor is current,
+-- and so are budget_gate and the degraded flags (switching the gate and
+-- recovering it take the same lock).
 -- The awards sum may read from before the wait; that's safe because Pay
 -- already holds this user's main account, so no other award for the user
 -- can commit in between. The cash back account (not locked) never changes.
+--
+-- Awards reserved by the Redis gate but not yet credited (cashback_pending)
+-- count against both the budget and the daily cap. The budget's pending
+-- sum can also be from before the wait: if the worker credited some of it
+-- meanwhile, that amount is subtracted twice and the budget looks smaller
+-- than it is. That only happens while pending rows drain after a switch
+-- away from the Redis gate, and it errs towards awarding less, never more.
 SELECT c.id, c.account_id, c.rate_bps, c.min_spend_minor, c.daily_cap_minor, c.award_increment_minor,
        c.starts_at, (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date AS campaign_day,
-       a.balance_minor AS budget_minor,
-       (SELECT COALESCE(SUM(ca.amount_minor), 0) FROM cashback_awards ca
-        WHERE ca.campaign_id = c.id AND ca.user_id = sqlc.arg('user_id')::uuid
-          AND ca.campaign_day = (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date
+       c.budget_gate, (c.gate_degraded_at IS NOT NULL)::bool AS gate_degraded,
+       (c.gate_degraded_at IS NOT NULL
+        AND c.gate_degraded_at <= now() - sqlc.arg('fallback_after_secs')::int * interval '1 second')::bool AS fallback_ready,
+       (a.balance_minor - COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p WHERE p.campaign_id = c.id), 0))::bigint
+           AS budget_minor,
+       (COALESCE((SELECT SUM(ca.amount_minor) FROM cashback_awards ca
+                  WHERE ca.campaign_id = c.id AND ca.user_id = sqlc.arg('user_id')::uuid
+                    AND ca.campaign_day = (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date), 0)
+      + COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p
+                  WHERE p.campaign_id = c.id AND p.user_id = sqlc.arg('user_id')::uuid
+                    AND p.campaign_day = (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date), 0)
        )::bigint AS awarded_today_minor,
        cb.id AS cashback_account_id
 FROM campaigns c
@@ -25,6 +41,32 @@ WHERE c.currency = sqlc.arg('currency')
   AND c.starts_at <= sqlc.arg('at')
   AND (c.ends_at IS NULL OR c.ends_at > sqlc.arg('at'))
 FOR UPDATE OF c, a;
+
+-- name: GetActiveCampaign :one
+-- LockActiveCampaign without the lock or the budget: what a payment needs
+-- to choose how to award (budget_gate and the degraded flags) and, for the
+-- Redis gate, how much to ask for. Its awards sums are as safe as
+-- LockActiveCampaign's: Pay holds the user's main account, and the worker
+-- moves an award from cashback_pending to cashback_awards in one
+-- transaction, so one statement sees it in exactly one of the two.
+SELECT c.id, c.rate_bps, c.min_spend_minor, c.daily_cap_minor, c.award_increment_minor,
+       (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date AS campaign_day,
+       c.budget_gate, (c.gate_degraded_at IS NOT NULL)::bool AS gate_degraded,
+       (c.gate_degraded_at IS NOT NULL
+        AND c.gate_degraded_at <= now() - sqlc.arg('fallback_after_secs')::int * interval '1 second')::bool AS fallback_ready,
+       (COALESCE((SELECT SUM(ca.amount_minor) FROM cashback_awards ca
+                  WHERE ca.campaign_id = c.id AND ca.user_id = sqlc.arg('user_id')::uuid
+                    AND ca.campaign_day = (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date), 0)
+      + COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p
+                  WHERE p.campaign_id = c.id AND p.user_id = sqlc.arg('user_id')::uuid
+                    AND p.campaign_day = (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date), 0)
+       )::bigint AS awarded_today_minor,
+       cb.id AS cashback_account_id
+FROM campaigns c
+LEFT JOIN accounts cb ON cb.user_id = sqlc.arg('user_id')::uuid AND cb.kind = 'cashback' AND cb.currency = c.currency
+WHERE c.currency = sqlc.arg('currency')
+  AND c.starts_at <= sqlc.arg('at')
+  AND (c.ends_at IS NULL OR c.ends_at > sqlc.arg('at'));
 
 -- name: RecordAward :one
 -- Pays a cash back award in one statement (one round trip, while the
@@ -95,7 +137,9 @@ WHERE a.user_id = sqlc.arg('user_id')::uuid AND a.kind = sqlc.arg('kind') AND a.
 -- name: GetCampaignStatus :one
 -- The campaign a user should see: the live one, else the latest ended one.
 SELECT c.id, c.name, c.currency, cur.minor_unit, c.rate_bps, c.min_spend_minor, c.daily_cap_minor,
-       a.balance_minor AS budget_remaining_minor,
+       -- Awards reserved but not yet credited are already spent.
+       (a.balance_minor - COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p WHERE p.campaign_id = c.id), 0))::bigint
+           AS budget_remaining_minor,
        (c.ends_at IS NULL OR c.ends_at > sqlc.arg('at')::timestamptz)::bool AS active,
        COALESCE((
            SELECT SUM(ca.amount_minor) FROM cashback_awards ca
@@ -162,14 +206,15 @@ RETURNING id;
 -- Locks the campaign and its budget account, in that order (as Pay does).
 -- Locking the account too means balance_minor is re-read after waiting for
 -- a payment, instead of being what it was before that payment's award.
-SELECT c.id, c.name, c.account_id, c.currency, c.starts_at, c.ends_at, a.balance_minor
+SELECT c.id, c.name, c.account_id, c.currency, c.starts_at, c.ends_at, c.budget_gate, a.balance_minor
 FROM campaigns c JOIN accounts a ON a.id = c.account_id
 WHERE c.id = $1
 FOR UPDATE OF c, a;
 
 -- name: ListCampaigns :many
 SELECT c.id, c.name, c.currency, cur.minor_unit, c.rate_bps, c.min_spend_minor, c.daily_cap_minor,
-       c.budget_minor, a.balance_minor AS remaining_minor, c.timezone, c.starts_at, c.ends_at
+       c.budget_minor, (a.balance_minor - COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p WHERE p.campaign_id = c.id), 0))::bigint AS remaining_minor,
+       c.timezone, c.starts_at, c.ends_at, c.budget_gate, (c.gate_degraded_at IS NOT NULL)::bool AS gate_degraded
 FROM campaigns c
 JOIN accounts a ON a.id = c.account_id
 JOIN currencies cur ON cur.code = c.currency

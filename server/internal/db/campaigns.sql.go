@@ -114,6 +114,78 @@ func (q *Queries) CreateCampaignAccount(ctx context.Context, currency string) (s
 	return id, err
 }
 
+const getActiveCampaign = `-- name: GetActiveCampaign :one
+SELECT c.id, c.rate_bps, c.min_spend_minor, c.daily_cap_minor, c.award_increment_minor,
+       ($1::timestamptz AT TIME ZONE c.timezone)::date AS campaign_day,
+       c.budget_gate, (c.gate_degraded_at IS NOT NULL)::bool AS gate_degraded,
+       (c.gate_degraded_at IS NOT NULL
+        AND c.gate_degraded_at <= now() - $2::int * interval '1 second')::bool AS fallback_ready,
+       (COALESCE((SELECT SUM(ca.amount_minor) FROM cashback_awards ca
+                  WHERE ca.campaign_id = c.id AND ca.user_id = $3::uuid
+                    AND ca.campaign_day = ($1::timestamptz AT TIME ZONE c.timezone)::date), 0)
+      + COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p
+                  WHERE p.campaign_id = c.id AND p.user_id = $3::uuid
+                    AND p.campaign_day = ($1::timestamptz AT TIME ZONE c.timezone)::date), 0)
+       )::bigint AS awarded_today_minor,
+       cb.id AS cashback_account_id
+FROM campaigns c
+LEFT JOIN accounts cb ON cb.user_id = $3::uuid AND cb.kind = 'cashback' AND cb.currency = c.currency
+WHERE c.currency = $4
+  AND c.starts_at <= $1
+  AND (c.ends_at IS NULL OR c.ends_at > $1)
+`
+
+type GetActiveCampaignParams struct {
+	At                time.Time
+	FallbackAfterSecs int32
+	UserID            string
+	Currency          string
+}
+
+type GetActiveCampaignRow struct {
+	ID                  string
+	RateBps             int32
+	MinSpendMinor       int64
+	DailyCapMinor       int64
+	AwardIncrementMinor int64
+	CampaignDay         time.Time
+	BudgetGate          string
+	GateDegraded        bool
+	FallbackReady       bool
+	AwardedTodayMinor   int64
+	CashbackAccountID   *string
+}
+
+// LockActiveCampaign without the lock or the budget: what a payment needs
+// to choose how to award (budget_gate and the degraded flags) and, for the
+// Redis gate, how much to ask for. Its awards sums are as safe as
+// LockActiveCampaign's: Pay holds the user's main account, and the worker
+// moves an award from cashback_pending to cashback_awards in one
+// transaction, so one statement sees it in exactly one of the two.
+func (q *Queries) GetActiveCampaign(ctx context.Context, arg GetActiveCampaignParams) (GetActiveCampaignRow, error) {
+	row := q.db.QueryRow(ctx, getActiveCampaign,
+		arg.At,
+		arg.FallbackAfterSecs,
+		arg.UserID,
+		arg.Currency,
+	)
+	var i GetActiveCampaignRow
+	err := row.Scan(
+		&i.ID,
+		&i.RateBps,
+		&i.MinSpendMinor,
+		&i.DailyCapMinor,
+		&i.AwardIncrementMinor,
+		&i.CampaignDay,
+		&i.BudgetGate,
+		&i.GateDegraded,
+		&i.FallbackReady,
+		&i.AwardedTodayMinor,
+		&i.CashbackAccountID,
+	)
+	return i, err
+}
+
 const getAwardByPayment = `-- name: GetAwardByPayment :one
 SELECT campaign_id, amount_minor FROM cashback_awards WHERE payment_transaction_id = $1
 `
@@ -132,7 +204,9 @@ func (q *Queries) GetAwardByPayment(ctx context.Context, paymentTransactionID st
 
 const getCampaignStatus = `-- name: GetCampaignStatus :one
 SELECT c.id, c.name, c.currency, cur.minor_unit, c.rate_bps, c.min_spend_minor, c.daily_cap_minor,
-       a.balance_minor AS budget_remaining_minor,
+       -- Awards reserved but not yet credited are already spent.
+       (a.balance_minor - COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p WHERE p.campaign_id = c.id), 0))::bigint
+           AS budget_remaining_minor,
        (c.ends_at IS NULL OR c.ends_at > $1::timestamptz)::bool AS active,
        COALESCE((
            SELECT SUM(ca.amount_minor) FROM cashback_awards ca
@@ -228,7 +302,8 @@ func (q *Queries) GetUserAccount(ctx context.Context, arg GetUserAccountParams) 
 
 const listCampaigns = `-- name: ListCampaigns :many
 SELECT c.id, c.name, c.currency, cur.minor_unit, c.rate_bps, c.min_spend_minor, c.daily_cap_minor,
-       c.budget_minor, a.balance_minor AS remaining_minor, c.timezone, c.starts_at, c.ends_at
+       c.budget_minor, (a.balance_minor - COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p WHERE p.campaign_id = c.id), 0))::bigint AS remaining_minor,
+       c.timezone, c.starts_at, c.ends_at, c.budget_gate, (c.gate_degraded_at IS NOT NULL)::bool AS gate_degraded
 FROM campaigns c
 JOIN accounts a ON a.id = c.account_id
 JOIN currencies cur ON cur.code = c.currency
@@ -248,6 +323,8 @@ type ListCampaignsRow struct {
 	Timezone       string
 	StartsAt       time.Time
 	EndsAt         *time.Time
+	BudgetGate     string
+	GateDegraded   bool
 }
 
 func (q *Queries) ListCampaigns(ctx context.Context) ([]ListCampaignsRow, error) {
@@ -272,6 +349,8 @@ func (q *Queries) ListCampaigns(ctx context.Context) ([]ListCampaignsRow, error)
 			&i.Timezone,
 			&i.StartsAt,
 			&i.EndsAt,
+			&i.BudgetGate,
+			&i.GateDegraded,
 		); err != nil {
 			return nil, err
 		}
@@ -357,25 +436,33 @@ func (q *Queries) ListCashbackTransactions(ctx context.Context, arg ListCashback
 const lockActiveCampaign = `-- name: LockActiveCampaign :one
 SELECT c.id, c.account_id, c.rate_bps, c.min_spend_minor, c.daily_cap_minor, c.award_increment_minor,
        c.starts_at, ($1::timestamptz AT TIME ZONE c.timezone)::date AS campaign_day,
-       a.balance_minor AS budget_minor,
-       (SELECT COALESCE(SUM(ca.amount_minor), 0) FROM cashback_awards ca
-        WHERE ca.campaign_id = c.id AND ca.user_id = $2::uuid
-          AND ca.campaign_day = ($1::timestamptz AT TIME ZONE c.timezone)::date
+       c.budget_gate, (c.gate_degraded_at IS NOT NULL)::bool AS gate_degraded,
+       (c.gate_degraded_at IS NOT NULL
+        AND c.gate_degraded_at <= now() - $2::int * interval '1 second')::bool AS fallback_ready,
+       (a.balance_minor - COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p WHERE p.campaign_id = c.id), 0))::bigint
+           AS budget_minor,
+       (COALESCE((SELECT SUM(ca.amount_minor) FROM cashback_awards ca
+                  WHERE ca.campaign_id = c.id AND ca.user_id = $3::uuid
+                    AND ca.campaign_day = ($1::timestamptz AT TIME ZONE c.timezone)::date), 0)
+      + COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p
+                  WHERE p.campaign_id = c.id AND p.user_id = $3::uuid
+                    AND p.campaign_day = ($1::timestamptz AT TIME ZONE c.timezone)::date), 0)
        )::bigint AS awarded_today_minor,
        cb.id AS cashback_account_id
 FROM campaigns c
 JOIN accounts a ON a.id = c.account_id
-LEFT JOIN accounts cb ON cb.user_id = $2::uuid AND cb.kind = 'cashback' AND cb.currency = c.currency
-WHERE c.currency = $3
+LEFT JOIN accounts cb ON cb.user_id = $3::uuid AND cb.kind = 'cashback' AND cb.currency = c.currency
+WHERE c.currency = $4
   AND c.starts_at <= $1
   AND (c.ends_at IS NULL OR c.ends_at > $1)
 FOR UPDATE OF c, a
 `
 
 type LockActiveCampaignParams struct {
-	At       time.Time
-	UserID   string
-	Currency string
+	At                time.Time
+	FallbackAfterSecs int32
+	UserID            string
+	Currency          string
 }
 
 type LockActiveCampaignRow struct {
@@ -387,6 +474,9 @@ type LockActiveCampaignRow struct {
 	AwardIncrementMinor int64
 	StartsAt            time.Time
 	CampaignDay         time.Time
+	BudgetGate          string
+	GateDegraded        bool
+	FallbackReady       bool
 	BudgetMinor         int64
 	AwardedTodayMinor   int64
 	CashbackAccountID   *string
@@ -399,12 +489,26 @@ type LockActiveCampaignRow struct {
 // from one budget (and ending the campaign) happen one at a time.
 //
 // Locking both rows matters: if this waits for another payment, Postgres
-// re-reads the locked rows once it gets them, so budget_minor is current.
+// re-reads the locked rows once it gets them, so budget_minor is current,
+// and so are budget_gate and the degraded flags (switching the gate and
+// recovering it take the same lock).
 // The awards sum may read from before the wait; that's safe because Pay
 // already holds this user's main account, so no other award for the user
 // can commit in between. The cash back account (not locked) never changes.
+//
+// Awards reserved by the Redis gate but not yet credited (cashback_pending)
+// count against both the budget and the daily cap. The budget's pending
+// sum can also be from before the wait: if the worker credited some of it
+// meanwhile, that amount is subtracted twice and the budget looks smaller
+// than it is. That only happens while pending rows drain after a switch
+// away from the Redis gate, and it errs towards awarding less, never more.
 func (q *Queries) LockActiveCampaign(ctx context.Context, arg LockActiveCampaignParams) (LockActiveCampaignRow, error) {
-	row := q.db.QueryRow(ctx, lockActiveCampaign, arg.At, arg.UserID, arg.Currency)
+	row := q.db.QueryRow(ctx, lockActiveCampaign,
+		arg.At,
+		arg.FallbackAfterSecs,
+		arg.UserID,
+		arg.Currency,
+	)
 	var i LockActiveCampaignRow
 	err := row.Scan(
 		&i.ID,
@@ -415,6 +519,9 @@ func (q *Queries) LockActiveCampaign(ctx context.Context, arg LockActiveCampaign
 		&i.AwardIncrementMinor,
 		&i.StartsAt,
 		&i.CampaignDay,
+		&i.BudgetGate,
+		&i.GateDegraded,
+		&i.FallbackReady,
 		&i.BudgetMinor,
 		&i.AwardedTodayMinor,
 		&i.CashbackAccountID,
@@ -423,7 +530,7 @@ func (q *Queries) LockActiveCampaign(ctx context.Context, arg LockActiveCampaign
 }
 
 const lockCampaign = `-- name: LockCampaign :one
-SELECT c.id, c.name, c.account_id, c.currency, c.starts_at, c.ends_at, a.balance_minor
+SELECT c.id, c.name, c.account_id, c.currency, c.starts_at, c.ends_at, c.budget_gate, a.balance_minor
 FROM campaigns c JOIN accounts a ON a.id = c.account_id
 WHERE c.id = $1
 FOR UPDATE OF c, a
@@ -436,6 +543,7 @@ type LockCampaignRow struct {
 	Currency     string
 	StartsAt     time.Time
 	EndsAt       *time.Time
+	BudgetGate   string
 	BalanceMinor int64
 }
 
@@ -452,6 +560,7 @@ func (q *Queries) LockCampaign(ctx context.Context, id string) (LockCampaignRow,
 		&i.Currency,
 		&i.StartsAt,
 		&i.EndsAt,
+		&i.BudgetGate,
 		&i.BalanceMinor,
 	)
 	return i, err

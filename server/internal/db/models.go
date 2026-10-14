@@ -31,6 +31,8 @@ type Campaign struct {
 	StartsAt            time.Time
 	EndsAt              *time.Time
 	CreatedAt           time.Time
+	BudgetGate          string
+	GateDegradedAt      *time.Time
 }
 
 type CashbackAward struct {
@@ -43,6 +45,20 @@ type CashbackAward struct {
 	AmountMinor          int64
 	CampaignDay          time.Time
 	CreatedAt            time.Time
+}
+
+type CashbackPending struct {
+	PaymentTransactionID string
+	CampaignID           string
+	UserID               string
+	CashbackAccountID    string
+	Currency             string
+	AmountMinor          int64
+	CampaignDay          time.Time
+	CreditDescription    string
+	CreatedAt            time.Time
+	Attempts             int32
+	FailedAt             *time.Time
 }
 
 type Currency struct {
