@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -569,6 +570,62 @@ func TestReconcilerCorrectsDrift(t *testing.T) {
 	}
 	if res, _ := e.rec.Reconcile(ctx, id, true); res.Drift != 0 || res.Pruned != 0 {
 		t.Errorf("third pass = %+v, want nothing to do", res)
+	}
+}
+
+// If Redis loses a campaign's keys (restarted without its data), the
+// reconciler degrades the campaign, so it awards under the lock, and then
+// reseeds the counter from the database.
+func TestReconcilerRecoversLostCounter(t *testing.T) {
+	e := newGateEnv(t)
+	ctx := context.Background()
+	id, _ := e.launchGated(t, 1_000_000_000, GateRedis)
+	u := payingUser(t, e.pool, 1_000_000_000)
+	e.pay(t, u, 3_500_000) // pending
+	want := int64(1_000_000_000 - 175_000)
+
+	e.client.Del(ctx, "campaign:{"+id+"}:remaining", "campaign:{"+id+"}:inflight")
+	wantCashback(t, e.pay(t, u, 3_500_000), 0, cashback.Unavailable)
+
+	row := db.ListGatedCampaignsRow{ID: id, BudgetGate: GateRedis}
+	log := slog.New(slog.DiscardHandler)
+	e.rec.reconcileOne(ctx, log, row)
+	var degraded bool
+	if err := e.pool.QueryRow(ctx,
+		"SELECT gate_degraded_at IS NOT NULL FROM campaigns WHERE id = $1", id).Scan(&degraded); err != nil {
+		t.Fatal(err)
+	}
+	if !degraded {
+		t.Fatal("campaign not degraded after its counter disappeared")
+	}
+
+	degrade(t, e.pool, id, GateSettleTime+time.Second)
+	row.GateDegraded = true
+	e.rec.reconcileOne(ctx, log, row)
+	if c := e.counter(t, id); c != want {
+		t.Errorf("counter after recovery = %d, want %d", c, want)
+	}
+	wantCashback(t, e.pay(t, u, 3_500_000), 175_000, cashback.Awarded)
+	e.assertNoDrift(t, id)
+}
+
+// A campaign switched to db while the reconciler still had it listed as
+// redis isn't degraded: its counter is closed on purpose.
+func TestReconcilerIgnoresCounterClosedBySwitch(t *testing.T) {
+	e := newGateEnv(t)
+	ctx := context.Background()
+	id, _ := e.launchGated(t, 1_000_000_000, GateRedis)
+	if err := e.rec.SetGate(ctx, id, GateDB); err != nil {
+		t.Fatal(err)
+	}
+	e.rec.reconcileOne(ctx, slog.New(slog.DiscardHandler), db.ListGatedCampaignsRow{ID: id, BudgetGate: GateRedis})
+	var degraded bool
+	if err := e.pool.QueryRow(ctx,
+		"SELECT gate_degraded_at IS NOT NULL FROM campaigns WHERE id = $1", id).Scan(&degraded); err != nil {
+		t.Fatal(err)
+	}
+	if degraded {
+		t.Error("campaign degraded after switching to db")
 	}
 }
 

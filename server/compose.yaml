@@ -20,9 +20,14 @@ services:
 
   redis:
     image: redis:8-alpine
+    # AOF, fsynced every second: a restart or crash loses at most about a
+    # second of writes. The server copes with losing everything anyway.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     # Exposed so local `go run .` and tests can reach it.
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -50,3 +55,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

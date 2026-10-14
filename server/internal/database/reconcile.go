@@ -408,6 +408,16 @@ func (r *Reconciler) reconcileOne(ctx context.Context, log *slog.Logger, c db.Li
 		log.Warn("budget reconcile failed", logx.Err(err))
 		return
 	}
+	if !res.Open && c.BudgetGate == GateRedis {
+		// Only SetGate closes the counter, under the reconcile lock, and it
+		// reseeds it or leaves the gate db before letting go, so a redis
+		// campaign without one means Redis lost it (restarted empty,
+		// flushed, evicted). Payments would earn nothing, and nothing counts that as
+		// a gate failure. Degrade instead: the lock path awards after
+		// GateSettleTime, and Recover reseeds the counter.
+		r.degradeLost(ctx, log, c.ID)
+		return
+	}
 	if res.Drift != 0 {
 		level := slog.LevelWarn
 		if abs(res.Drift) >= driftAlertIncrements*max(c.AwardIncrementMinor, 1) {
@@ -417,6 +427,20 @@ func (r *Reconciler) reconcileOne(ctx context.Context, log *slog.Logger, c db.Li
 	}
 	if res.Released > 0 {
 		log.Warn("budget gate released leaked reservations", "released", res.Released)
+	}
+}
+
+// degradeLost degrades a campaign whose Redis counter is missing.
+// DegradeGate changes nothing if the campaign switched away from redis
+// since it was listed.
+func (r *Reconciler) degradeLost(ctx context.Context, log *slog.Logger, campaignID string) {
+	_, err := db.New(r.Pool).DegradeGate(ctx, campaignID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		log.Error("budget gate degrade failed", logx.Err(err))
+	default:
+		log.Error("budget gate counter missing from Redis: degraded until it is reseeded")
 	}
 }
 
