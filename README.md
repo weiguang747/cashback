@@ -543,4 +543,4 @@ npx expo lint && npx tsc --noEmit
 
 ## Out of scope
 
-Real authentication, an admin API for campaigns, refunds and cash back clawback, double-entry seed balances, CI, and translated UI strings.
+Real authentication, an admin API for campaigns, refunds and cash back clawback, double-entry seed balances, and translated UI strings.
