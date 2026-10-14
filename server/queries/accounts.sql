@@ -40,10 +40,12 @@ WHERE a.user_id = sqlc.arg('user_id')::uuid AND a.kind = 'main' AND a.currency =
 -- name: DebitAccount :one
 -- The overdraft guard. Matches no row when the balance is too low, and the
 -- row lock it takes makes concurrent debits of one account run in turn.
+-- debited_at is the database's clock (the transaction's start), so every
+-- server agrees on when a payment happened and on its campaign day.
 UPDATE accounts
 SET balance_minor = balance_minor - sqlc.arg('amount_minor')
 WHERE id = sqlc.arg('id') AND balance_minor >= sqlc.arg('amount_minor')
-RETURNING balance_minor;
+RETURNING balance_minor, now()::timestamptz AS debited_at;
 
 -- name: GetAccountBalance :one
 SELECT balance_minor FROM accounts WHERE id = $1;

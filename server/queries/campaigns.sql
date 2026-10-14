@@ -203,23 +203,30 @@ WHERE a.user_id = sqlc.arg('user_id')::uuid AND a.kind = sqlc.arg('kind') AND a.
 
 -- name: GetCampaignStatus :one
 -- The campaign a user should see: the live one, else the latest ended one.
+-- "Now" is the database's clock, the same one payments use for the daily cap.
 SELECT c.id, c.name, c.currency, cur.minor_unit, c.rate_bps, c.min_spend_minor, c.daily_cap_minor,
        -- Awards reserved but not yet credited are already spent.
        (a.balance_minor - COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p WHERE p.campaign_id = c.id), 0))::bigint
            AS budget_remaining_minor,
-       (c.ends_at IS NULL OR c.ends_at > sqlc.arg('at')::timestamptz)::bool AS active,
-       COALESCE((
+       (c.ends_at IS NULL OR c.ends_at > now())::bool AS active,
+       -- Pending awards count too, as they do against the cap in a payment.
+       (COALESCE((
            SELECT SUM(ca.amount_minor) FROM cashback_awards ca
            WHERE ca.campaign_id = c.id AND ca.user_id = sqlc.arg('user_id')::uuid
-             AND ca.campaign_day = (sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone)::date
-       ), 0)::bigint AS earned_today_minor,
-       ((date_trunc('day', sqlc.arg('at')::timestamptz AT TIME ZONE c.timezone) + interval '1 day')
+             AND ca.campaign_day = (now() AT TIME ZONE c.timezone)::date
+       ), 0)
+      + COALESCE((
+           SELECT SUM(p.amount_minor) FROM cashback_pending p
+           WHERE p.campaign_id = c.id AND p.user_id = sqlc.arg('user_id')::uuid
+             AND p.campaign_day = (now() AT TIME ZONE c.timezone)::date
+       ), 0))::bigint AS earned_today_minor,
+       ((date_trunc('day', now() AT TIME ZONE c.timezone) + interval '1 day')
            AT TIME ZONE c.timezone)::timestamptz AS reset_at
 FROM campaigns c
 JOIN accounts a ON a.id = c.account_id
 JOIN currencies cur ON cur.code = c.currency
-WHERE c.currency = sqlc.arg('currency') AND c.starts_at <= sqlc.arg('at')::timestamptz
-ORDER BY (c.ends_at IS NULL OR c.ends_at > sqlc.arg('at')::timestamptz) DESC, c.starts_at DESC
+WHERE c.currency = sqlc.arg('currency') AND c.starts_at <= now()
+ORDER BY (c.ends_at IS NULL OR c.ends_at > now()) DESC, c.starts_at DESC
 LIMIT 1;
 
 -- name: ListCashbackTransactions :many

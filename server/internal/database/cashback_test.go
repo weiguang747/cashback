@@ -154,6 +154,50 @@ func TestCashbackPaysWhatsLeftThenEnds(t *testing.T) {
 	assertLedger(t, pool)
 }
 
+// Without a time of its own, a payment takes the database's clock, so API
+// servers with skewed clocks still agree on the campaign day.
+func TestCashbackDayComesFromDatabaseClock(t *testing.T) {
+	pool := openTestDB(t)
+	ctx := context.Background()
+	launch(t, pool, launchParams(1_000_000_000))
+	u := payingUser(t, pool, 1_000_000_000)
+
+	var before, after time.Time
+	pool.QueryRow(ctx, "SELECT now()").Scan(&before)
+	r := payAt(t, pool, u, 3_500_000, time.Time{})
+	pool.QueryRow(ctx, "SELECT now()").Scan(&after)
+
+	wantCashback(t, r, 175_000, cashback.Awarded)
+	if at := r.Transaction.CreatedAt; at.Before(before) || at.After(after) {
+		t.Errorf("payment at %s, want between database times %s and %s", at, before, after)
+	}
+	var matches bool
+	err := pool.QueryRow(ctx, `SELECT campaign_day = ($2::timestamptz AT TIME ZONE 'Asia/Jakarta')::date
+		FROM cashback_awards WHERE payment_transaction_id = $1`, r.Transaction.ID, r.Transaction.CreatedAt).Scan(&matches)
+	if err != nil || !matches {
+		t.Errorf("campaign_day doesn't match the payment's database time (%v)", err)
+	}
+	assertLedger(t, pool)
+}
+
+// A user with no cash back account can still pay during a campaign. A
+// payment that would have earned is reported unavailable, not failed.
+func TestCashbackWithoutCashbackAccountStillPays(t *testing.T) {
+	pool := openTestDB(t)
+	launch(t, pool, launchParams(1_000_000_000))
+	u := payingUser(t, pool, 1_000_000_000)
+	if _, err := pool.Exec(context.Background(), "DELETE FROM accounts WHERE id = $1", u.cashback); err != nil {
+		t.Fatal(err)
+	}
+
+	wantCashback(t, payAt(t, pool, u, 1_999_900, noon), 0, cashback.BelowMinimum)
+	wantCashback(t, payAt(t, pool, u, 3_500_000, noon), 0, cashback.Unavailable)
+	if b := balanceOf(t, pool, u.main); b != 1_000_000_000-1_999_900-3_500_000 {
+		t.Errorf("main balance = %d, want both payments debited", b)
+	}
+	assertLedger(t, pool)
+}
+
 // Twenty users race for a Rp 10.000 budget. The awards add up to exactly
 // the budget, and it never goes negative.
 func TestCashbackConcurrentPaymentsNeverOverspendBudget(t *testing.T) {
@@ -412,18 +456,6 @@ func TestEndCampaignDuringPayments(t *testing.T) {
 		t.Errorf("campaign account = %d after ending, want 0", b)
 	}
 	assertLedger(t, pool)
-}
-
-// A user without a cash back account can still pay during a campaign when
-// the payment earns nothing.
-func TestCashbackBelowMinimumWithoutCashbackAccount(t *testing.T) {
-	pool := openTestDB(t)
-	launch(t, pool, launchParams(1_000_000_000))
-	u := payingUser(t, pool, 1_000_000_000)
-	if _, err := pool.Exec(context.Background(), "DELETE FROM accounts WHERE id = $1", u.cashback); err != nil {
-		t.Fatal(err)
-	}
-	wantCashback(t, payAt(t, pool, u, 1_000_000, noon), 0, cashback.BelowMinimum)
 }
 
 // An awarding payment in db mode is seven round trips: BEGIN, the debit,

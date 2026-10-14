@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,7 +73,7 @@ func Redeem(ctx context.Context, pool *pgxpool.Pool, p RedeemParams) (RedeemResu
 		return RedeemResult{}, ErrNoCashbackAccount
 	}
 
-	cashbackLeft, err := q.DebitAccount(ctx, db.DebitAccountParams{ID: cashback.ID, AmountMinor: p.AmountMinor})
+	debit, err := q.DebitAccount(ctx, db.DebitAccountParams{ID: cashback.ID, AmountMinor: p.AmountMinor})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RedeemResult{}, ErrInsufficientFunds
 	}
@@ -82,8 +81,7 @@ func Redeem(ctx context.Context, pool *pgxpool.Pool, p RedeemParams) (RedeemResu
 		return RedeemResult{}, fmt.Errorf("debit cash back: %w", err)
 	}
 
-	// Postgres keeps microseconds, so the response matches the stored row.
-	now := time.Now().Truncate(time.Microsecond)
+	now := debit.DebitedAt
 	key := p.IdempotencyKey
 	_, err = q.InsertTransaction(ctx, db.InsertTransactionParams{
 		AccountID: cashback.ID, Name: "Cash back redeemed", Description: "To available balance",
@@ -123,7 +121,7 @@ func Redeem(ctx context.Context, pool *pgxpool.Pool, p RedeemParams) (RedeemResu
 		AmountMinor: credit.AmountMinor, Currency: credit.Currency, MinorUnit: cashback.MinorUnit, CreatedAt: now,
 	}
 	return RedeemResult{
-		Transaction: row, MainBalanceMinor: mainBalance, CashbackBalanceMinor: cashbackLeft,
+		Transaction: row, MainBalanceMinor: mainBalance, CashbackBalanceMinor: debit.BalanceMinor,
 		CashbackPendingMinor: cashback.PendingMinor, MinorUnit: cashback.MinorUnit,
 	}, nil
 }

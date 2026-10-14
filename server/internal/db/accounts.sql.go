@@ -7,13 +7,14 @@ package db
 
 import (
 	"context"
+	"time"
 )
 
 const debitAccount = `-- name: DebitAccount :one
 UPDATE accounts
 SET balance_minor = balance_minor - $1
 WHERE id = $2 AND balance_minor >= $1
-RETURNING balance_minor
+RETURNING balance_minor, now()::timestamptz AS debited_at
 `
 
 type DebitAccountParams struct {
@@ -21,13 +22,20 @@ type DebitAccountParams struct {
 	ID          string
 }
 
+type DebitAccountRow struct {
+	BalanceMinor int64
+	DebitedAt    time.Time
+}
+
 // The overdraft guard. Matches no row when the balance is too low, and the
 // row lock it takes makes concurrent debits of one account run in turn.
-func (q *Queries) DebitAccount(ctx context.Context, arg DebitAccountParams) (int64, error) {
+// debited_at is the database's clock (the transaction's start), so every
+// server agrees on when a payment happened and on its campaign day.
+func (q *Queries) DebitAccount(ctx context.Context, arg DebitAccountParams) (DebitAccountRow, error) {
 	row := q.db.QueryRow(ctx, debitAccount, arg.AmountMinor, arg.ID)
-	var balance_minor int64
-	err := row.Scan(&balance_minor)
-	return balance_minor, err
+	var i DebitAccountRow
+	err := row.Scan(&i.BalanceMinor, &i.DebitedAt)
+	return i, err
 }
 
 const getAccountBalance = `-- name: GetAccountBalance :one

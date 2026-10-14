@@ -169,7 +169,7 @@ func reserveCashback(ctx context.Context, q *db.Queries, g *CashbackGate, in awa
 		return result, nil, nil
 	}
 	if in.cashbackAccountID == nil {
-		return nil, nil, errors.New("no cash back account")
+		return noCashbackAccount(ctx, in.campaignID, p.UserID), nil, nil
 	}
 	if g == nil || g.Gate == nil {
 		result.Reason = cashback.Unavailable

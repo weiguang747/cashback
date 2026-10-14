@@ -183,6 +183,43 @@ func TestGateAwardIsPendingThenCredited(t *testing.T) {
 	assertLedger(t, e.pool)
 }
 
+// What the app shows as earned today includes awards still pending, as the
+// daily cap does, both before and after the worker credits them.
+func TestGateEarnedTodayCountsPendingAwards(t *testing.T) {
+	e := newGateEnv(t)
+	ctx := context.Background()
+	e.launchGated(t, 1_000_000_000, GateRedis)
+	u := payingUser(t, e.pool, 1_000_000_000)
+
+	// Paid now (no fixed time), since the status is for the database's today.
+	r, err := Pay(ctx, e.pool, PayParams{
+		UserID: u.id, AccountID: u.main, Currency: "IDR", AmountMinor: 3_500_000, MerchantName: "Kopi Senja",
+		IdempotencyKey: fmt.Sprintf("gate-%d-%d", time.Now().UnixNano(), payKeys.Add(1)), Gate: e.gate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Cashback == nil || !r.Cashback.Pending {
+		t.Fatalf("cashback = %+v, want a pending award", r.Cashback)
+	}
+
+	earnedToday := func() int64 {
+		t.Helper()
+		st, err := db.New(e.pool).GetCampaignStatus(ctx, db.GetCampaignStatusParams{UserID: u.id, Currency: "IDR"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.EarnedTodayMinor
+	}
+	if got := earnedToday(); got != 175_000 {
+		t.Errorf("earned today while pending = %d, want 175000", got)
+	}
+	creditAll(t, e.pool)
+	if got := earnedToday(); got != 175_000 {
+		t.Errorf("earned today once credited = %d, want 175000", got)
+	}
+}
+
 // Twenty users race for a Rp 10.000 budget through the gate. The grants add
 // up to exactly the budget, and once credited so do the awards; the
 // campaign ends at zero with nothing failed.
@@ -239,6 +276,24 @@ func TestGateConcurrentPaymentsNeverOverspend(t *testing.T) {
 
 // One user's concurrent payments can't earn past the daily cap, whether
 // earlier awards are credited or still pending.
+// Under the Redis gate too, a user with no cash back account pays without
+// cash back and reserves nothing.
+func TestGateWithoutCashbackAccountStillPays(t *testing.T) {
+	e := newGateEnv(t)
+	id, _ := e.launchGated(t, 1_000_000_000, GateRedis)
+	u := payingUser(t, e.pool, 1_000_000_000)
+	if _, err := e.pool.Exec(context.Background(), "DELETE FROM accounts WHERE id = $1", u.cashback); err != nil {
+		t.Fatal(err)
+	}
+
+	wantCashback(t, e.pay(t, u, 3_500_000), 0, cashback.Unavailable)
+	if p := pendingFor(t, e.pool, id); p != 0 {
+		t.Errorf("pending = %d, want 0", p)
+	}
+	e.assertNoDrift(t, id)
+	assertLedger(t, e.pool)
+}
+
 func TestGateDailyCapCountsPendingAwards(t *testing.T) {
 	e := newGateEnv(t)
 	e.launchGated(t, 1_000_000_000, GateRedis)

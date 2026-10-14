@@ -12,6 +12,7 @@ import (
 
 	"cashback/server/internal/cashback"
 	"cashback/server/internal/db"
+	"cashback/server/internal/logx"
 )
 
 var (
@@ -28,8 +29,9 @@ type PayParams struct {
 	AmountMinor    int64 // positive; debited from the account
 	MerchantName   string
 	IdempotencyKey string
-	// Now is when the payment happens; zero means time.Now(). Tests set it
-	// to land either side of a campaign's midnight.
+	// Now is when the payment happens; zero means the database's clock, so
+	// servers with skewed clocks still agree on the campaign day. Tests set
+	// it to land either side of a campaign's midnight.
 	Now time.Time
 	// Gate is the Redis budget gate, for campaigns in shadow or redis mode.
 	// Without one, a redis-mode campaign awards nothing (unavailable).
@@ -75,10 +77,6 @@ type CashbackResult struct {
 // (account_id, idempotency_key) constraint means a key can only ever pay
 // once, even if the Redis idempotency layer is bypassed.
 func Pay(ctx context.Context, pool *pgxpool.Pool, p PayParams) (PayResult, error) {
-	now := p.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
 	// A reservation must be committed or rolled back within MaxPayDuration;
 	// the reconciler and the degraded fallback rely on it.
 	ctx, cancel := context.WithTimeout(ctx, MaxPayDuration)
@@ -91,12 +89,16 @@ func Pay(ctx context.Context, pool *pgxpool.Pool, p PayParams) (PayResult, error
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
 
-	balance, err := q.DebitAccount(ctx, db.DebitAccountParams{ID: p.AccountID, AmountMinor: p.AmountMinor})
+	debit, err := q.DebitAccount(ctx, db.DebitAccountParams{ID: p.AccountID, AmountMinor: p.AmountMinor})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PayResult{}, ErrInsufficientFunds
 	}
 	if err != nil {
 		return PayResult{}, fmt.Errorf("debit: %w", err)
+	}
+	now := p.Now
+	if now.IsZero() {
+		now = debit.DebitedAt
 	}
 
 	key := p.IdempotencyKey
@@ -129,7 +131,7 @@ func Pay(ctx context.Context, pool *pgxpool.Pool, p PayParams) (PayResult, error
 			return PayResult{}, fmt.Errorf("commit payment: %w", err)
 		}
 		after.committed(ctx, p.Gate)
-		return PayResult{Transaction: db.GetTransactionByIdempotencyKeyRow(payment), BalanceMinor: balance, Cashback: cb}, nil
+		return PayResult{Transaction: db.GetTransactionByIdempotencyKeyRow(payment), BalanceMinor: debit.BalanceMinor, Cashback: cb}, nil
 	}
 	// Not committed and never will be: give back any reservation.
 	after.rolledBack(ctx, p.Gate)
@@ -241,7 +243,7 @@ func lockedAward(ctx context.Context, q *db.Queries, p PayParams, paymentID stri
 	result.AmountMinor = amount
 
 	if campaign.CashbackAccountID == nil {
-		return nil, afterPay{}, errors.New("no cash back account")
+		return noCashbackAccount(ctx, campaign.ID, p.UserID), afterPay{}, nil
 	}
 	award, err := q.RecordAward(ctx, db.RecordAwardParams{
 		AmountMinor:          amount,
@@ -268,6 +270,15 @@ func lockedAward(ctx context.Context, q *db.Queries, p PayParams, paymentID stri
 		after.shadow = &shadowAward{campaignID: campaign.ID, paymentID: paymentID, amount: amount, increment: r.AwardIncrement}
 	}
 	return result, after, nil
+}
+
+// noCashbackAccount is the result for a user who earned cash back but has
+// no cash back account to hold it. That's a data problem, not the payer's,
+// so the payment goes ahead without cash back and the error is logged.
+func noCashbackAccount(ctx context.Context, campaignID, userID string) *CashbackResult {
+	logx.From(ctx).Error("no cash back account; payment earns nothing",
+		"campaign_id", campaignID, "user_id", userID)
+	return &CashbackResult{CampaignID: campaignID, Reason: cashback.Unavailable}
 }
 
 func rules(rateBps int32, minSpend, dailyCap, increment int64) cashback.Rules {

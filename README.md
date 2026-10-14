@@ -122,7 +122,7 @@ Headers: `X-User-ID`, `Idempotency-Key`.
 
 `cashback` is `null` when no campaign is live. Otherwise:
 
-- `reason` is one of `awarded`, `below_minimum`, `daily_cap_reached`, `budget_exhausted` (see [How a campaign works](#how-a-cash-back-campaign-works)), or `unavailable`: the Redis gate couldn't check the budget, so the payment went ahead without cash back.
+- `reason` is one of `awarded`, `below_minimum`, `daily_cap_reached`, `budget_exhausted` (see [How a campaign works](#how-a-cash-back-campaign-works)), or `unavailable`: the payment went ahead without cash back because the Redis gate couldn't check the budget, or the user has no cash back account to hold it (logged as an error).
 - `status` is `credited` (already in the cash back balance, or nothing earned) or `pending` (reserved by the [Redis budget gate](#redis-budget-gate), credited moments later). A replayed response is the original, so it can still say `pending`.
 
 Merchants are not stored server-side; the id and name come from the request.
@@ -409,14 +409,14 @@ One limit of the backstop: the reason a payment earned *nothing* isn't stored, s
 
 1. **Launch** (`campaign create`): creates a `campaign` account and moves the budget into it from the currency's `funding` account, double-entry. The exclusion constraint rejects an overlapping campaign in the same currency.
 2. **Award** (inside every payment, in the payment's DB transaction; this is the default `db` gate, see [Redis budget gate](#redis-budget-gate) for the other):
-   1. Lock the campaign live at the payment time (`SELECT … FOR UPDATE`), and compute the payment's **campaign day**: `(now AT TIME ZONE timezone)::date`, in Postgres, from the server clock.
+   1. Lock the campaign live at the payment time (`SELECT … FOR UPDATE`), and compute the payment's **campaign day**: `(now AT TIME ZONE timezone)::date`, in Postgres, where `now` is the database's clock (taken by the debit), not the API server's.
    2. Sum the user's awards for that campaign day, and read the budget (the campaign account's balance).
    3. Run `cashback.Award` (rate → rounding → min spend → daily cap → budget).
    4. If non-zero: conditionally debit the campaign account, credit the user's `cashback` account, and insert a `cashback_awards` row linking the payment to both legs.
    5. If the budget is now zero, set `ends_at` in the same transaction.
 3. **End** (`campaign end <id>`, or automatically on budget exhaustion): leftover budget goes back to `funding`.
 
-**Why per-day is server-side:** the daily cap resets at midnight in the campaign's time zone, computed by Postgres from the server timestamp. Changing the phone's clock or travelling can't game it. The app only displays `resetAt`.
+**Why per-day is server-side:** the daily cap resets at midnight in the campaign's time zone, computed by Postgres from its own clock, so API servers with skewed clocks still agree on the day. Changing the phone's clock or travelling can't game it. The app only displays `resetAt`.
 
 **What the user sees:** `GET /v1/cashback/campaign` returns the rate, minimum, cap, `earnedToday`, budget remaining and `resetAt`. Each payment response tells them what they earned and, if nothing, why. Earned cash back accumulates in the cash back account until they redeem it into their main balance.
 

@@ -207,24 +207,29 @@ SELECT c.id, c.name, c.currency, cur.minor_unit, c.rate_bps, c.min_spend_minor, 
        -- Awards reserved but not yet credited are already spent.
        (a.balance_minor - COALESCE((SELECT SUM(p.amount_minor) FROM cashback_pending p WHERE p.campaign_id = c.id), 0))::bigint
            AS budget_remaining_minor,
-       (c.ends_at IS NULL OR c.ends_at > $1::timestamptz)::bool AS active,
-       COALESCE((
+       (c.ends_at IS NULL OR c.ends_at > now())::bool AS active,
+       -- Pending awards count too, as they do against the cap in a payment.
+       (COALESCE((
            SELECT SUM(ca.amount_minor) FROM cashback_awards ca
-           WHERE ca.campaign_id = c.id AND ca.user_id = $2::uuid
-             AND ca.campaign_day = ($1::timestamptz AT TIME ZONE c.timezone)::date
-       ), 0)::bigint AS earned_today_minor,
-       ((date_trunc('day', $1::timestamptz AT TIME ZONE c.timezone) + interval '1 day')
+           WHERE ca.campaign_id = c.id AND ca.user_id = $1::uuid
+             AND ca.campaign_day = (now() AT TIME ZONE c.timezone)::date
+       ), 0)
+      + COALESCE((
+           SELECT SUM(p.amount_minor) FROM cashback_pending p
+           WHERE p.campaign_id = c.id AND p.user_id = $1::uuid
+             AND p.campaign_day = (now() AT TIME ZONE c.timezone)::date
+       ), 0))::bigint AS earned_today_minor,
+       ((date_trunc('day', now() AT TIME ZONE c.timezone) + interval '1 day')
            AT TIME ZONE c.timezone)::timestamptz AS reset_at
 FROM campaigns c
 JOIN accounts a ON a.id = c.account_id
 JOIN currencies cur ON cur.code = c.currency
-WHERE c.currency = $3 AND c.starts_at <= $1::timestamptz
-ORDER BY (c.ends_at IS NULL OR c.ends_at > $1::timestamptz) DESC, c.starts_at DESC
+WHERE c.currency = $2 AND c.starts_at <= now()
+ORDER BY (c.ends_at IS NULL OR c.ends_at > now()) DESC, c.starts_at DESC
 LIMIT 1
 `
 
 type GetCampaignStatusParams struct {
-	At       time.Time
 	UserID   string
 	Currency string
 }
@@ -244,8 +249,9 @@ type GetCampaignStatusRow struct {
 }
 
 // The campaign a user should see: the live one, else the latest ended one.
+// "Now" is the database's clock, the same one payments use for the daily cap.
 func (q *Queries) GetCampaignStatus(ctx context.Context, arg GetCampaignStatusParams) (GetCampaignStatusRow, error) {
-	row := q.db.QueryRow(ctx, getCampaignStatus, arg.At, arg.UserID, arg.Currency)
+	row := q.db.QueryRow(ctx, getCampaignStatus, arg.UserID, arg.Currency)
 	var i GetCampaignStatusRow
 	err := row.Scan(
 		&i.ID,

@@ -45,7 +45,7 @@ type campaignResponse struct {
 func getCampaign(s store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		r, err := s.GetCampaignStatus(c.Request.Context(), db.GetCampaignStatusParams{
-			At: time.Now(), UserID: currentUser(c).ID, Currency: currencyParam(c),
+			UserID: currentUser(c).ID, Currency: currencyParam(c),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusOK, campaignResponse{})

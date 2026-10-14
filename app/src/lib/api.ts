@@ -75,7 +75,7 @@ export async function getAccounts(opts: { signal?: AbortSignal } = {}): Promise<
 }
 
 export type PaymentInput = { merchantId: string; merchantName: string; amount: Money };
-/** `unavailable`: the server couldn't check the budget, so the payment went ahead without cash back. */
+/** `unavailable`: the payment went ahead without cash back (the server couldn't check the budget, or couldn't hold the award). */
 export type CashbackReason = 'awarded' | 'below_minimum' | 'daily_cap_reached' | 'budget_exhausted' | 'unavailable';
 /** `pending`: earned, and on its way to the cash back balance. A replayed response can still say pending. */
 export type CashbackStatus = 'pending' | 'credited';
