@@ -113,6 +113,73 @@ WITH debit AS (
 SELECT debit.balance_minor AS budget_left_minor, EXISTS (SELECT 1 FROM closed) AS campaign_ended
 FROM debit, award;
 
+-- name: RecordAwards :one
+-- Credits a batch of pending awards from one campaign in one statement,
+-- as RecordAward does for one: a single conditional debit of the batch
+-- total from the campaign account (so it can never overdraw), a credit to
+-- each user's cash back account (summed per account), the two ledger rows
+-- and the cashback_awards row for each award, and the batch's
+-- cashback_pending rows deleted. When the budget reaches zero the campaign
+-- ends. Every part runs or none does: if the account can't cover the
+-- total, nothing is written and no row is returned (the worker then
+-- credits the awards one by one to find the ones that can't be covered).
+--
+-- Ledger row ids are generated up front (input is MATERIALIZED, so each
+-- gen_random_uuid() runs once per award), which is how every award row
+-- points at its own two halves.
+-- The arrays are parallel, one element per award. Set-returning functions
+-- in a select list run in lockstep, so the unnests zip them row by row.
+WITH zipped AS (
+    SELECT unnest(sqlc.arg('payment_ids')::uuid[]) AS payment_id,
+           unnest(sqlc.arg('user_ids')::uuid[]) AS user_id,
+           unnest(sqlc.arg('cashback_account_ids')::uuid[]) AS cashback_account_id,
+           unnest(sqlc.arg('amounts')::bigint[]) AS amount_minor,
+           unnest(sqlc.arg('campaign_days')::date[]) AS campaign_day,
+           unnest(sqlc.arg('credit_descriptions')::text[]) AS credit_description
+), input AS MATERIALIZED (
+    SELECT z.*, gen_random_uuid() AS debit_id, gen_random_uuid() AS credit_id FROM zipped z
+), total AS (
+    SELECT SUM(amount_minor)::bigint AS amount_minor FROM input
+), debit AS (
+    UPDATE accounts SET balance_minor = balance_minor - total.amount_minor
+    FROM total
+    WHERE id = sqlc.arg('campaign_account_id')::uuid AND balance_minor >= total.amount_minor
+    RETURNING balance_minor
+), debit_rows AS (
+    INSERT INTO transactions (id, account_id, name, description, kind, amount_minor, currency, created_at)
+    SELECT i.debit_id, sqlc.arg('campaign_account_id')::uuid, 'Cash back', 'Award for payment ' || i.payment_id, 'out',
+           -i.amount_minor, sqlc.arg('currency')::char(3), sqlc.arg('at')::timestamptz
+    FROM input i
+    WHERE EXISTS (SELECT 1 FROM debit)
+), credit AS (
+    UPDATE accounts a SET balance_minor = a.balance_minor + per_account.amount_minor
+    FROM (SELECT cashback_account_id, SUM(amount_minor)::bigint AS amount_minor FROM input GROUP BY cashback_account_id) per_account
+    WHERE a.id = per_account.cashback_account_id AND EXISTS (SELECT 1 FROM debit)
+), credit_rows AS (
+    INSERT INTO transactions (id, account_id, name, description, kind, amount_minor, currency, created_at)
+    SELECT i.credit_id, i.cashback_account_id, 'Cash back', i.credit_description, 'cashback',
+           i.amount_minor, sqlc.arg('currency')::char(3), sqlc.arg('at')::timestamptz
+    FROM input i
+    WHERE EXISTS (SELECT 1 FROM debit)
+), awards AS (
+    INSERT INTO cashback_awards (campaign_id, user_id, payment_transaction_id, debit_transaction_id,
+                                 credit_transaction_id, amount_minor, campaign_day)
+    SELECT sqlc.arg('campaign_id')::uuid, i.user_id, i.payment_id, i.debit_id, i.credit_id, i.amount_minor, i.campaign_day
+    FROM input i
+    WHERE EXISTS (SELECT 1 FROM debit)
+), credited AS (
+    DELETE FROM cashback_pending
+    WHERE payment_transaction_id IN (SELECT payment_id FROM input) AND EXISTS (SELECT 1 FROM debit)
+), closed AS (
+    UPDATE campaigns
+    SET ends_at = GREATEST(sqlc.arg('at')::timestamptz, starts_at + interval '1 microsecond')
+    WHERE id = sqlc.arg('campaign_id')::uuid AND (ends_at IS NULL OR ends_at > sqlc.arg('at')::timestamptz)
+      AND EXISTS (SELECT 1 FROM debit WHERE balance_minor = 0)
+    RETURNING id
+)
+SELECT debit.balance_minor AS budget_left_minor, EXISTS (SELECT 1 FROM closed) AS campaign_ended
+FROM debit;
+
 -- name: AddToBalance :one
 -- Unconditional change; the accounts_balance_check constraint still keeps
 -- every account except funding at or above zero.

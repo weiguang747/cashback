@@ -16,6 +16,7 @@ import (
 	"cashback/server/internal/budgetgate"
 	"cashback/server/internal/cashback"
 	"cashback/server/internal/db"
+	"cashback/server/internal/dbtrace"
 )
 
 // These need TEST_REDIS_URL as well as TEST_DATABASE_URL.
@@ -828,6 +829,76 @@ func TestPendingCashbackIsShownButNotRedeemable(t *testing.T) {
 	}
 	if r.CashbackBalanceMinor != 0 || r.CashbackPendingMinor != 0 {
 		t.Errorf("after redeeming = balance %d, pending %d; want 0 and 0", r.CashbackBalanceMinor, r.CashbackPendingMinor)
+	}
+	assertLedger(t, e.pool)
+}
+
+// A batch is credited in one statement, with one credit per cash back
+// account even when a user has several awards in it.
+func TestWorkerCreditsBatchInOneStatement(t *testing.T) {
+	e := newGateEnv(t)
+	_, account := e.launchGated(t, 1_000_000_000, GateRedis)
+	a, b := payingUser(t, e.pool, 1_000_000_000), payingUser(t, e.pool, 1_000_000_000)
+	for range 3 {
+		e.pay(t, a, 3_500_000)
+		e.pay(t, b, 2_000_000)
+	}
+
+	ctx, stats := dbtrace.WithStats(context.Background())
+	got, err := CreditPendingAwards(ctx, e.pool, AwardBatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Credited != 6 || got.Failed != 0 {
+		t.Fatalf("worker = %+v, want all six credited", got)
+	}
+	// BEGIN, claim, lock the campaign, the batch, COMMIT.
+	if n := stats.Queries(); n != 5 {
+		t.Errorf("crediting six awards ran %d queries, want 5", n)
+	}
+	if bal := balanceOf(t, e.pool, a.cashback); bal != 3*175_000 {
+		t.Errorf("a's cash back = %d, want 525000", bal)
+	}
+	if bal := balanceOf(t, e.pool, b.cashback); bal != 3*100_000 {
+		t.Errorf("b's cash back = %d, want 300000", bal)
+	}
+	if bal := balanceOf(t, e.pool, account); bal != 1_000_000_000-825_000 {
+		t.Errorf("campaign account = %d", bal)
+	}
+	assertLedger(t, e.pool)
+}
+
+// When the account can't cover a batch's total, the worker credits the
+// awards it can cover and marks only the rest failed.
+func TestWorkerFallsBackWhenBatchCantBeCovered(t *testing.T) {
+	e := newGateEnv(t)
+	ctx := context.Background()
+	id, account := e.launchGated(t, 1_000_000, GateRedis)
+	u := payingUser(t, e.pool, 1_000_000_000)
+	var last PayResult
+	for range 3 {
+		last = e.pay(t, u, 3_500_000) // 175,000 each
+	}
+	// The last reservation claims more than the whole budget, as if Redis had
+	// been seeded wrong. (More than what's left after the other two would
+	// make the outcome depend on the order they're tried in.)
+	if _, err := e.pool.Exec(ctx, "UPDATE cashback_pending SET amount_minor = 2000000 WHERE payment_transaction_id = $1",
+		last.Transaction.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got := creditAll(t, e.pool)
+	if got.Credited != 2 || got.Failed != 1 {
+		t.Fatalf("worker = %+v, want two credited and one failed", got)
+	}
+	if bal := balanceOf(t, e.pool, u.cashback); bal != 350_000 {
+		t.Errorf("cash back = %d, want the two coverable awards (350000)", bal)
+	}
+	if bal := balanceOf(t, e.pool, account); bal != 650_000 {
+		t.Errorf("campaign account = %d, want 650000", bal)
+	}
+	if p := pendingFor(t, e.pool, id); p != 2_000_000 {
+		t.Errorf("pending = %d, want only the failed award", p)
 	}
 	assertLedger(t, e.pool)
 }

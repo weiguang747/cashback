@@ -688,6 +688,110 @@ func (q *Queries) RecordAward(ctx context.Context, arg RecordAwardParams) (Recor
 	return i, err
 }
 
+const recordAwards = `-- name: RecordAwards :one
+WITH zipped AS (
+    SELECT unnest($1::uuid[]) AS payment_id,
+           unnest($2::uuid[]) AS user_id,
+           unnest($3::uuid[]) AS cashback_account_id,
+           unnest($4::bigint[]) AS amount_minor,
+           unnest($5::date[]) AS campaign_day,
+           unnest($6::text[]) AS credit_description
+), input AS MATERIALIZED (
+    SELECT z.payment_id, z.user_id, z.cashback_account_id, z.amount_minor, z.campaign_day, z.credit_description, gen_random_uuid() AS debit_id, gen_random_uuid() AS credit_id FROM zipped z
+), total AS (
+    SELECT SUM(amount_minor)::bigint AS amount_minor FROM input
+), debit AS (
+    UPDATE accounts SET balance_minor = balance_minor - total.amount_minor
+    FROM total
+    WHERE id = $7::uuid AND balance_minor >= total.amount_minor
+    RETURNING balance_minor
+), debit_rows AS (
+    INSERT INTO transactions (id, account_id, name, description, kind, amount_minor, currency, created_at)
+    SELECT i.debit_id, $7::uuid, 'Cash back', 'Award for payment ' || i.payment_id, 'out',
+           -i.amount_minor, $8::char(3), $9::timestamptz
+    FROM input i
+    WHERE EXISTS (SELECT 1 FROM debit)
+), credit AS (
+    UPDATE accounts a SET balance_minor = a.balance_minor + per_account.amount_minor
+    FROM (SELECT cashback_account_id, SUM(amount_minor)::bigint AS amount_minor FROM input GROUP BY cashback_account_id) per_account
+    WHERE a.id = per_account.cashback_account_id AND EXISTS (SELECT 1 FROM debit)
+), credit_rows AS (
+    INSERT INTO transactions (id, account_id, name, description, kind, amount_minor, currency, created_at)
+    SELECT i.credit_id, i.cashback_account_id, 'Cash back', i.credit_description, 'cashback',
+           i.amount_minor, $8::char(3), $9::timestamptz
+    FROM input i
+    WHERE EXISTS (SELECT 1 FROM debit)
+), awards AS (
+    INSERT INTO cashback_awards (campaign_id, user_id, payment_transaction_id, debit_transaction_id,
+                                 credit_transaction_id, amount_minor, campaign_day)
+    SELECT $10::uuid, i.user_id, i.payment_id, i.debit_id, i.credit_id, i.amount_minor, i.campaign_day
+    FROM input i
+    WHERE EXISTS (SELECT 1 FROM debit)
+), credited AS (
+    DELETE FROM cashback_pending
+    WHERE payment_transaction_id IN (SELECT payment_id FROM input) AND EXISTS (SELECT 1 FROM debit)
+), closed AS (
+    UPDATE campaigns
+    SET ends_at = GREATEST($9::timestamptz, starts_at + interval '1 microsecond')
+    WHERE id = $10::uuid AND (ends_at IS NULL OR ends_at > $9::timestamptz)
+      AND EXISTS (SELECT 1 FROM debit WHERE balance_minor = 0)
+    RETURNING id
+)
+SELECT debit.balance_minor AS budget_left_minor, EXISTS (SELECT 1 FROM closed) AS campaign_ended
+FROM debit
+`
+
+type RecordAwardsParams struct {
+	PaymentIds         []string
+	UserIds            []string
+	CashbackAccountIds []string
+	Amounts            []int64
+	CampaignDays       []time.Time
+	CreditDescriptions []string
+	CampaignAccountID  string
+	Currency           string
+	At                 time.Time
+	CampaignID         string
+}
+
+type RecordAwardsRow struct {
+	BudgetLeftMinor int64
+	CampaignEnded   bool
+}
+
+// Credits a batch of pending awards from one campaign in one statement,
+// as RecordAward does for one: a single conditional debit of the batch
+// total from the campaign account (so it can never overdraw), a credit to
+// each user's cash back account (summed per account), the two ledger rows
+// and the cashback_awards row for each award, and the batch's
+// cashback_pending rows deleted. When the budget reaches zero the campaign
+// ends. Every part runs or none does: if the account can't cover the
+// total, nothing is written and no row is returned (the worker then
+// credits the awards one by one to find the ones that can't be covered).
+//
+// Ledger row ids are generated up front (input is MATERIALIZED, so each
+// gen_random_uuid() runs once per award), which is how every award row
+// points at its own two halves.
+// The arrays are parallel, one element per award. Set-returning functions
+// in a select list run in lockstep, so the unnests zip them row by row.
+func (q *Queries) RecordAwards(ctx context.Context, arg RecordAwardsParams) (RecordAwardsRow, error) {
+	row := q.db.QueryRow(ctx, recordAwards,
+		arg.PaymentIds,
+		arg.UserIds,
+		arg.CashbackAccountIds,
+		arg.Amounts,
+		arg.CampaignDays,
+		arg.CreditDescriptions,
+		arg.CampaignAccountID,
+		arg.Currency,
+		arg.At,
+		arg.CampaignID,
+	)
+	var i RecordAwardsRow
+	err := row.Scan(&i.BudgetLeftMinor, &i.CampaignEnded)
+	return i, err
+}
+
 const upsertFundingAccount = `-- name: UpsertFundingAccount :one
 INSERT INTO accounts (kind, currency) VALUES ('funding', $1)
 ON CONFLICT (currency) WHERE kind = 'funding' DO UPDATE SET kind = EXCLUDED.kind

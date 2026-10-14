@@ -1,11 +1,11 @@
 package database
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"time"
 
@@ -19,7 +19,8 @@ import (
 
 const (
 	// AwardBatch is how many pending awards one worker transaction credits.
-	// Each batch locks the campaign once, however many awards it holds.
+	// Each batch locks the campaign once and credits its awards in one
+	// statement, however many it holds.
 	AwardBatch = 100
 	// workerPoll is how often an idle worker looks for new awards: the
 	// usual delay before a reserved award shows in the cash back balance.
@@ -40,8 +41,13 @@ type CreditResult struct {
 
 // CreditPendingAwards credits up to limit pending awards in one database
 // transaction: each moves from cashback_pending to cashback_awards, with
-// its two ledger rows and balance changes (RecordAward), or is marked
-// failed if the campaign account can't cover it.
+// its two ledger rows and balance changes, or is marked failed if the
+// campaign account can't cover it.
+//
+// Each campaign's awards are credited with one statement (RecordAwards):
+// one debit of their total and one round trip, however many awards. Only
+// when the account can't cover the total are they credited one by one, so
+// the ones it can't cover are found and marked failed.
 //
 // Locks follow Pay's order: the claimed pending rows, then each campaign
 // and its account (in id order), then the users' cash back accounts. If the
@@ -65,56 +71,50 @@ func CreditPendingAwards(ctx context.Context, pool *pgxpool.Pool, limit int) (Cr
 		return out, nil
 	}
 
-	campaigns := map[string]bool{}
+	byCampaign := map[string][]db.ClaimPendingAwardsRow{}
 	for _, r := range rows {
-		campaigns[r.CampaignID] = true
+		byCampaign[r.CampaignID] = append(byCampaign[r.CampaignID], r)
 	}
-	ids := make([]string, 0, len(campaigns))
-	for id := range campaigns {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
+	ids := slices.Sorted(maps.Keys(byCampaign))
 	for _, id := range ids {
 		if _, err := q.LockCampaign(ctx, id); err != nil {
 			return out, fmt.Errorf("lock campaign %s: %w", id, err)
 		}
 	}
 
-	slices.SortStableFunc(rows, func(a, b db.ClaimPendingAwardsRow) int { return cmp.Compare(a.CampaignID, b.CampaignID) })
 	now := time.Now()
 	var failed []string
-	for _, r := range rows {
-		award, err := q.RecordAward(ctx, db.RecordAwardParams{
-			AmountMinor:          r.AmountMinor,
-			CampaignAccountID:    r.CampaignAccountID,
-			DebitDescription:     "Award for payment " + r.PaymentTransactionID,
-			Currency:             r.Currency,
-			At:                   now,
-			CashbackAccountID:    r.CashbackAccountID,
-			CreditDescription:    r.CreditDescription,
-			CampaignID:           r.CampaignID,
-			UserID:               r.UserID,
-			PaymentTransactionID: r.PaymentTransactionID,
-			CampaignDay:          r.CampaignDay,
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The campaign account can't cover it: the gate granted more than
-			// the database holds. Never retried; the budget stays reserved.
-			if err := q.MarkPendingFailed(ctx, r.PaymentTransactionID); err != nil {
-				return out, fmt.Errorf("mark pending award failed: %w", err)
+	for _, id := range ids {
+		batch := byCampaign[id]
+		ended, err := creditBatch(ctx, q, batch, now)
+		if err == nil {
+			out.Credited += len(batch)
+			if ended {
+				out.Ended = append(out.Ended, id)
 			}
-			failed = append(failed, r.PaymentTransactionID)
 			continue
 		}
-		if err != nil {
-			return out, &awardError{paymentID: r.PaymentTransactionID, err: err}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			if len(batch) == 1 {
+				return out, &awardError{paymentID: batch[0].PaymentTransactionID, err: err}
+			}
+			return out, fmt.Errorf("record %d awards for campaign %s: %w", len(batch), id, err)
 		}
-		if err := q.DeletePendingAward(ctx, r.PaymentTransactionID); err != nil {
-			return out, fmt.Errorf("delete pending award: %w", err)
-		}
-		out.Credited++
-		if award.CampaignEnded {
-			out.Ended = append(out.Ended, r.CampaignID)
+		// The account can't cover the whole batch (the gate granted more
+		// than the database holds): credit what it can, one by one.
+		for _, r := range batch {
+			ended, ok, err := creditOne(ctx, q, r, now)
+			if err != nil {
+				return out, err
+			}
+			if !ok {
+				failed = append(failed, r.PaymentTransactionID)
+				continue
+			}
+			out.Credited++
+			if ended {
+				out.Ended = append(out.Ended, id)
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -125,6 +125,58 @@ func CreditPendingAwards(ctx context.Context, pool *pgxpool.Pool, limit int) (Cr
 		slog.Error("pending award failed: campaign account can't cover it", "payment_transaction_id", id)
 	}
 	return out, nil
+}
+
+// creditBatch credits one campaign's awards in one statement. It returns
+// pgx.ErrNoRows, having written nothing, when the campaign account can't
+// cover their total.
+func creditBatch(ctx context.Context, q *db.Queries, batch []db.ClaimPendingAwardsRow, now time.Time) (ended bool, err error) {
+	p := db.RecordAwardsParams{
+		CampaignID: batch[0].CampaignID, CampaignAccountID: batch[0].CampaignAccountID,
+		Currency: batch[0].Currency, At: now,
+	}
+	for _, r := range batch {
+		p.PaymentIds = append(p.PaymentIds, r.PaymentTransactionID)
+		p.UserIds = append(p.UserIds, r.UserID)
+		p.CashbackAccountIds = append(p.CashbackAccountIds, r.CashbackAccountID)
+		p.Amounts = append(p.Amounts, r.AmountMinor)
+		p.CampaignDays = append(p.CampaignDays, r.CampaignDay)
+		p.CreditDescriptions = append(p.CreditDescriptions, r.CreditDescription)
+	}
+	row, err := q.RecordAwards(ctx, p)
+	return row.CampaignEnded, err
+}
+
+// creditOne credits a single award; ok is false when the campaign account
+// can't cover it, in which case it is marked failed: never retried, and its
+// budget stays reserved.
+func creditOne(ctx context.Context, q *db.Queries, r db.ClaimPendingAwardsRow, now time.Time) (ended, ok bool, err error) {
+	award, err := q.RecordAward(ctx, db.RecordAwardParams{
+		AmountMinor:          r.AmountMinor,
+		CampaignAccountID:    r.CampaignAccountID,
+		DebitDescription:     "Award for payment " + r.PaymentTransactionID,
+		Currency:             r.Currency,
+		At:                   now,
+		CashbackAccountID:    r.CashbackAccountID,
+		CreditDescription:    r.CreditDescription,
+		CampaignID:           r.CampaignID,
+		UserID:               r.UserID,
+		PaymentTransactionID: r.PaymentTransactionID,
+		CampaignDay:          r.CampaignDay,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := q.MarkPendingFailed(ctx, r.PaymentTransactionID); err != nil {
+			return false, false, fmt.Errorf("mark pending award failed: %w", err)
+		}
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, &awardError{paymentID: r.PaymentTransactionID, err: err}
+	}
+	if err := q.DeletePendingAward(ctx, r.PaymentTransactionID); err != nil {
+		return false, false, fmt.Errorf("delete pending award: %w", err)
+	}
+	return award.CampaignEnded, true, nil
 }
 
 // awardError is a database error writing one award.
