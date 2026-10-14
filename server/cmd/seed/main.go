@@ -34,7 +34,8 @@ type demoTransaction struct {
 type demoUser struct {
 	email, name string
 	// mainBalanceMinor is where the main account ends up. An "Opening
-	// balance" row makes up the difference from the transactions below.
+	// balance" row makes up the difference from the transactions below,
+	// unless there is none to make up.
 	mainBalanceMinor int64
 	// Main account history. Payments use merchants from the app's list
 	// (app/src/data/merchants.ts). There is no seeded cash back: it is only
@@ -44,14 +45,8 @@ type demoUser struct {
 
 var demoUsers = []demoUser{
 	{
-		email: "andi@example.com", name: "Andi Pratama", mainBalanceMinor: 1_245_000_000,
-		transactions: []demoTransaction{
-			{"Kopi Senja", "Payment", -3_500_000, "out", 0, 8, 42},
-			{"Sarah Wijaya", "Received", 50_000_000, "in", 0, 7, 30},
-			{"Toko Maju Jaya", "Payment", -24_850_000, "out", 1, 19, 15},
-			{"Martabak Pak Udin", "Payment", -4_200_000, "out", 1, 18, 2},
-			{"Salary · PT Acme", "Received", 950_000_000, "in", 3, 9, 0},
-		},
+		// A brand-new user: empty balance and no history.
+		email: "andi@example.com", name: "Andi Pratama",
 	},
 	{
 		email: "sarah@example.com", name: "Sarah Wijaya", mainBalanceMinor: 320_000_000,
@@ -64,7 +59,6 @@ var demoUsers = []demoUser{
 	{
 		email: "budi@example.com", name: "Budi Santoso", mainBalanceMinor: 175_000_000,
 		transactions: []demoTransaction{
-			{"Andi Pratama", "Received", 7_500_000, "in", 4, 12, 5},
 			{"Bengkel Motor Jaya", "Payment", -20_000_000, "out", 5, 18, 20},
 			{"Kopi Senja", "Payment", -3_500_000, "out", 5, 8, 35},
 		},
@@ -138,10 +132,13 @@ func seedUser(ctx context.Context, q *db.Queries, u demoUser, withTransactions b
 		mainSum += t.amountMinor
 	}
 	opening := u.mainBalanceMinor - mainSum
-	if opening <= 0 {
+	if opening < 0 {
 		return 0, fmt.Errorf("main balance %d is below its transactions' total %d", u.mainBalanceMinor, mainSum)
 	}
-	rows := append([]demoTransaction{{"Opening balance", "Top up", opening, "in", 30, 9, 0}}, u.transactions...)
+	rows := u.transactions
+	if opening > 0 {
+		rows = append([]demoTransaction{{"Opening balance", "Top up", opening, "in", 30, 9, 0}}, rows...)
+	}
 
 	today := time.Now().In(wib)
 	for _, t := range rows {
