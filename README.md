@@ -16,7 +16,6 @@ cd server && docker compose up -d --build          # API :8080, Postgres :5432, 
 DATABASE_URL='postgres://cashback:cashback@localhost:5432/cashback?sslmode=disable' go run ./cmd/seed
 go run ./cmd/campaign create --name "Launch 5%" --currency IDR --rate-bps 500 \
   --min 20000 --daily-cap 50000 --budget 10000000 --round-to 1 --starts-at now
-go run ./cmd/campaign gate <campaign-id> redis      # optional: enforce the budget in Redis
 cd ../app && npx expo start                        # Metro :8081, open in Expo Go
 ```
 
@@ -429,11 +428,11 @@ Each campaign has a **budget gate** (`campaigns.budget_gate`) that decides how i
 
 | Gate | How a payment awards cash back | Response `status` |
 |---|---|---|
-| `db` (default) | Under the campaign row lock, in the payment's DB transaction (above) | `credited` |
+| `db` | Under the campaign row lock, in the payment's DB transaction (above) | `credited` |
 | `shadow` | As `db`, and each award is mirrored into Redis afterwards to compare; disagreements are logged, nothing acts on Redis | `credited` |
-| `redis` | Reserves the award in Redis and records it in `cashback_pending`, **without the campaign lock**; a worker credits it moments later | `pending` |
+| `redis` (default) | Reserves the award in Redis and records it in `cashback_pending`, **without the campaign lock**; a worker credits it moments later | `pending` |
 
-Switch with `go run ./cmd/campaign gate <id> db|shadow|redis` (it needs `REDIS_URL`); `campaign list` shows each campaign's gate. The usual rollout is `db` → `shadow` (watch for `budget gate disagreement` in the logs) → `redis`.
+`campaign create` launches new campaigns with the `redis` gate (so it needs Redis); pass `--gate db` or `--gate shadow` for another. Switch with `go run ./cmd/campaign gate <id> db|shadow|redis` (it needs `REDIS_URL`); `campaign list` shows each campaign's gate. To roll the gate out carefully, launch with `--gate shadow`, watch for `budget gate disagreement` in the logs, then switch to `redis`.
 
 **The database stays the source of truth.** What's left of a budget is the campaign account's balance minus pending awards. Redis only holds a counter in front of it, so the hard guarantee doesn't depend on Redis: the worker's debit of the campaign account is conditional, exactly as in `db` mode.
 

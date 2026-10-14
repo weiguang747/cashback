@@ -26,7 +26,7 @@ TEST_REDIS_URL=redis://localhost:6379/15 go test ./...
 # Local data (DATABASE_URL from .env.example)
 go run ./cmd/seed                                 # demo users, accounts, history (safe to re-run)
 go run ./cmd/campaign create --name "Launch 5%" --currency IDR --rate-bps 500 \
-  --min 20000 --daily-cap 50000 --budget 10000000 --round-to 1 --starts-at now
+  --min 20000 --daily-cap 50000 --budget 10000000 --round-to 1 --starts-at now   # redis gate; --gate db|shadow
 go run ./cmd/campaign list | end <id>
 go run ./cmd/campaign gate <id> db|shadow|redis    # switch budget enforcement (needs REDIS_URL)
 go run ./cmd/campaign reconcile <id>               # one reconciler pass: drift, leaks
@@ -102,8 +102,8 @@ There is no real authentication. Sign-in looks up an existing email (`no account
 - **One live campaign per currency**, enforced by an exclusion constraint (`campaigns_no_overlap`). Future campaigns can be scheduled; back-to-back is fine.
 - **Rules per campaign:** `rate_bps` (500 = 5%), `min_spend_minor` per payment, `daily_cap_minor` per user per day, `award_increment_minor` (rounding unit; IDR campaigns use whole rupiah), `budget_minor`, `timezone`.
 - **The budget is a real account.** `LaunchCampaign` moves the budget from the currency's `funding` account (the only account allowed to go negative) into a new `campaign` account. "Budget remaining" is that account's balance minus awards still pending (`cashback_pending`). `EndCampaign` returns the leftover that isn't owed to pending awards to funding.
-- **Each campaign has a budget gate** (`campaigns.budget_gate`), switched with `cmd/campaign gate` (`Reconciler.SetGate`), never by hand:
-  - `db` (default): awarding happens inside `Pay` under the campaign lock (below).
+- **Each campaign has a budget gate** (`campaigns.budget_gate`), switched with `cmd/campaign gate` (`Reconciler.SetGate`), never by hand. `cmd/campaign create` uses `redis` unless `--gate` says otherwise: it launches with `db` (the column default) and then calls `SetGate`, because only a switch seeds the counter. Don't change the column default to `redis`; a campaign inserted that way has no counter, and every payment would earn nothing until the gate degraded and recovered.
+  - `db`: awarding happens inside `Pay` under the campaign lock (below).
   - `shadow`: as `db`, plus each award is mirrored into the Redis counter after commit and any disagreement is logged (`budget gate disagreement`). Nothing acts on Redis. Use it before switching a campaign to `redis`.
   - `redis`: `Pay` reserves the award with one Lua script (`internal/budgetgate`) and writes a `cashback_pending` row in the payment's transaction, **without the campaign lock**. The award worker (`RunAwardWorker`, every server runs one) credits pending awards in batches of up to 100, under the campaign lock but off the payment path. Each campaign's batch is one `RecordAwards` statement: one debit of the total, one credit per cash back account, all ledger and award rows. If the account can't cover the total, the worker credits that batch one award at a time with `RecordAward` and marks only the uncoverable awards failed. The response says `status: "pending"`; `/v1/accounts` shows it as `pending` on the cash back account, and it can't be redeemed until credited.
 - **The database is the truth; Redis is only the gate.** What's left = campaign account balance − pending. The Redis counter should equal that minus reservations still in flight. The reconciler (every 5 s, every server; one at a time per campaign via a Redis lock) reads Redis, then the database in one REPEATABLE READ snapshot, then Redis again. That gives the exact drift even under load, because only it removes committed reservations from the in-flight list. It corrects drift with `INCRBY` and logs `budget gate drift`. It also releases reservations older than `GateSettleTime` that never reached the database.

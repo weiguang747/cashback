@@ -2,7 +2,7 @@
 //
 //	DATABASE_URL=postgres://... go run ./cmd/campaign create --name "Launch 5%" \
 //	    --currency IDR --rate-bps 500 --min 20000 --daily-cap 50000 \
-//	    --budget 10000000 --round-to 1 --starts-at now
+//	    --budget 10000000 --round-to 1 --starts-at now [--gate redis]
 //	DATABASE_URL=postgres://... go run ./cmd/campaign list
 //	DATABASE_URL=postgres://... go run ./cmd/campaign end <campaign-id>
 //	DATABASE_URL=postgres://... REDIS_URL=redis://... go run ./cmd/campaign gate <campaign-id> redis
@@ -11,6 +11,10 @@
 // Launching moves the budget from the currency's funding account into a new
 // campaign account; ending returns whatever is left. Amounts are in major
 // units (rupiah), parsed exactly.
+//
+// New campaigns use the Redis budget gate unless --gate says otherwise, so
+// create needs REDIS_URL too. The campaign is launched with the db gate and
+// then switched (as gate does), because only the switch seeds the counter.
 //
 // gate switches how the budget is enforced (db, shadow or redis; see
 // database.Reconciler.SetGate). reconcile runs one reconciler pass and
@@ -62,7 +66,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "create":
-		err = create(ctx, pool, os.Args[2:])
+		err = create(ctx, pool, os.Args[2:], func() *database.Reconciler { return reconciler(ctx, pool, true) })
 	case "list":
 		err = list(ctx, pool)
 	case "end":
@@ -91,7 +95,7 @@ func main() {
 	}
 }
 
-func create(ctx context.Context, pool *pgxpool.Pool, args []string) error {
+func create(ctx context.Context, pool *pgxpool.Pool, args []string, reconciler func() *database.Reconciler) error {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 	name := fs.String("name", "", "campaign name shown to users (required)")
 	currency := fs.String("currency", "IDR", "ISO 4217 currency")
@@ -103,10 +107,20 @@ func create(ctx context.Context, pool *pgxpool.Pool, args []string) error {
 	timezone := fs.String("timezone", "Asia/Jakarta", "time zone that defines the daily cap's day")
 	startsAt := fs.String("starts-at", "now", `"now" or an RFC 3339 time`)
 	endsAt := fs.String("ends-at", "", "optional RFC 3339 end time")
+	gate := fs.String("gate", database.GateRedis, "budget gate: db, shadow or redis")
 	fs.Parse(args)
 	if *name == "" || *dailyCap == "" || *budget == "" {
 		fs.Usage()
 		return errors.New("--name, --daily-cap and --budget are required")
+	}
+	if *gate != database.GateDB && *gate != database.GateShadow && *gate != database.GateRedis {
+		return fmt.Errorf("--gate: %w", database.ErrBadGate)
+	}
+	// Connect to Redis before launching, so an unreachable Redis stops here
+	// rather than leaving a campaign on the wrong gate.
+	var r *database.Reconciler
+	if *gate != database.GateDB {
+		r = reconciler()
 	}
 
 	var minorUnit int
@@ -166,7 +180,13 @@ func create(ctx context.Context, pool *pgxpool.Pool, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("launched %s (%s)\n", *name, id)
+	if r != nil {
+		if err := r.SetGate(ctx, id, *gate); err != nil {
+			return fmt.Errorf("launched %s (%s) with the db gate, but switching to %s failed: %w; retry with: campaign gate %s %s",
+				*name, id, *gate, err, id, *gate)
+		}
+	}
+	fmt.Printf("launched %s (%s) with the %s budget gate\n", *name, id, *gate)
 	return nil
 }
 
