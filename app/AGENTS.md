@@ -107,13 +107,14 @@ npx expo start                                   # then i / a, or open exp://127
 
 ## Moving money (pay, redeem)
 
-- Every money-moving request sends an `Idempotency-Key`: a `Crypto.randomUUID()` per attempt, kept in a `useRef` and **reused for retries of the same amount**, replaced when the amount changes.
-  - **Unknown outcomes** (network error, `timeout`, 5xx, `in_progress`): keep the key and let the user retry. `payment-failed` passes it back to `pay` as the `key` param. Never tell the user no money moved: it may have. `request()` gives up after 15 s (`ApiError.code === 'timeout'`) so a stalled server can't leave "Processing…" up forever.
+- Every money-moving request sends an `Idempotency-Key`: a `Crypto.randomUUID()` per payment, kept in a `useRef` and **reused for retries of the same amount**, replaced when the amount changes.
+  - **Brief failures** (connection lost, `502`/`503`/`504`, `in_progress`) are retried automatically by `createPayment` and `redeemCashback` (`withRetry` in `api.ts`): same key, up to 3 attempts, exponential backoff with full jitter. Don't add retry loops in screens.
+  - **Unknown outcomes** after that (or `timeout`, which isn't retried automatically): keep the key and let the user retry. `payment-failed` passes it back to `pay` as the `key` param. Never tell the user no money moved: it may have. `request()` gives up after 15 s (`ApiError.code === 'timeout'`) so a stalled server can't leave "Processing…" up forever.
   - **Definite declines** (`ApiError.code === 'insufficient_funds'`): drop the key; the next try is a new request.
 - Branch on `ApiError.code`, never on the message text. Show `error.message` to the user; server messages are written for that.
 - The pre-checks in the app (over-balance hint, disabled buttons) are for the user's benefit only. The server enforces the real rules.
 - Success screens show the **server's** numbers (amount, cash back, date, reference), passed as route params. Don't recompute them in the app.
-- **Cash back can be pending.** When a campaign uses the server's Redis budget gate, `payment.cashback.status` is `pending`: earned, credited to the cash back balance within moments. The success screen says it's on its way, and `Account.pending` (cash back accounts only) shows it on the balance card. Never add pending to the balance in the app, and don't offer to redeem it: the server only redeems the credited balance. Home checks again once, shortly after it sees pending cash back. The `unavailable` reason means the server couldn't check the budget, so the payment went ahead without cash back.
+- **Cash back can be pending.** When a campaign uses the server's Redis budget gate, `payment.cashback.status` is `pending`: earned, credited to the cash back balance within moments. The success screen says it's on its way, and `Account.pending` (cash back accounts only) shows it on the balance card. Never add pending to the balance in the app, and don't offer to redeem it: the server only redeems the credited balance. Home checks again once, shortly after it sees pending cash back. The `unavailable` reason means the payment went ahead without cash back (the server couldn't check the budget, or couldn't hold the award).
 
 ## Session and auth
 

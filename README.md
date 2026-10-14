@@ -37,7 +37,7 @@ All app endpoints are under `/v1`. Request and response bodies are JSON.
   The value has exactly as many decimals as the currency's ISO 4217 minor unit (IDR 2, JPY 0). Negative means money out. Request amounts are always positive; the server applies the sign.
 - **Times** are RFC 3339 in UTC, e.g. `"2026-10-13T07:42:00Z"`.
 - **Errors** are `{"error": "message for the user", "code": "machine_code"}`. `code` is optional; clients branch on `code` and display `error`.
-- **Auth (demo only):** after sign-in, send `X-User-ID: <user uuid>` on every request. There are no passwords or tokens yet.
+- **Auth (demo only):** after sign-in, send `X-User-ID: <user uuid>` on every request. There are no passwords or tokens yet. A missing, malformed or unknown id gets `401` `sign in required`.
 - **Lists** are newest first and paged by cursor. `limit` is the page size (default 20, at most 100). Each response has `nextCursor`: pass it back as `cursor` for the next page; it is `null` on the last page. Cursors are opaque and stay valid while new rows arrive (no skipped or repeated rows).
 - **Timeouts:** each `/v1` request has 10 s. A request that runs out returns `503` with code `timeout`; for a money-moving request the outcome is unknown, so retry with the same `Idempotency-Key`.
 - **Request ids:** every response carries `X-Request-ID` (the client's, if well-formed, or a generated one) for finding the request in the logs.
@@ -160,7 +160,7 @@ A replayed response carries the header `Idempotent-Replayed: true`.
 }
 ```
 
-`resetAt` is the next midnight in the campaign's time zone (Asia/Jakarta), expressed in UTC.
+`earnedToday` includes cash back still pending (see [Redis budget gate](#redis-budget-gate)), as the daily cap does. `resetAt` is the next midnight in the campaign's time zone (Asia/Jakarta), expressed in UTC.
 
 #### `GET /v1/cashback/history?currency=IDR&limit=20&cursor=…`
 
@@ -348,7 +348,7 @@ Edge cases:
 
 ### Idempotency
 
-`POST /v1/payments` and `POST /v1/cashback/redeem` require an `Idempotency-Key` header (8–128 of `[A-Za-z0-9_-]`). The app sends a UUID per attempt and reuses it when retrying. The server guarantees **at most one effect per key**, using two layers:
+`POST /v1/payments` and `POST /v1/cashback/redeem` require an `Idempotency-Key` header (8–128 of `[A-Za-z0-9_-]`). The app sends a UUID per payment and reuses it on every retry. The server guarantees **at most one effect per key**, using two layers:
 
 ```mermaid
 sequenceDiagram
@@ -385,7 +385,7 @@ sequenceDiagram
 
 One limit of the backstop: the reason a payment earned *nothing* isn't stored, so a database replay reports `cashback` only for real awards.
 
-**On the app side** ([`pay.tsx`](app/src/app/pay.tsx)), the key lives in a `useRef` tied to the amount:
+**On the app side** ([`pay.tsx`](app/src/app/pay.tsx), retries in [`api.ts`](app/src/lib/api.ts)), the key lives in a `useRef` tied to the amount:
 
 - Brief failures (connection lost, `502`/`503`/`504`, `in_progress`) are retried automatically with the same key, up to 3 attempts, waiting a random time up to 0.5 s, then 1 s (exponential backoff with full jitter, capped at 4 s), so phones that failed together don't retry together.
 - Unknown outcome after that (or the app's own 15 s timeout, which isn't retried automatically): keep the key; "Try again" reuses it.
@@ -421,7 +421,7 @@ One limit of the backstop: the reason a payment earned *nothing* isn't stored, s
 
 **What the user sees:** `GET /v1/cashback/campaign` returns the rate, minimum, cap, `earnedToday`, budget remaining and `resetAt`. Each payment response tells them what they earned and, if nothing, why. Earned cash back accumulates in the cash back account until they redeem it into their main balance.
 
-**Known limit of the `db` gate:** every awarding payment locks the single campaign row, so awards in a currency run one at a time (about 1,500 awarding payments a second locally with 32 payers). The [Redis budget gate](#redis-budget-gate) takes that lock off the payment path.
+**Known limit of the `db` gate:** every awarding payment locks the single campaign row, so awards in a currency run one at a time. The [Redis budget gate](#redis-budget-gate) takes that lock off the payment path.
 
 ### Redis budget gate
 
@@ -454,7 +454,7 @@ sequenceDiagram
 
 **Reserving** is one Lua script, so it's atomic: it refuses a payment id it has already seen, grants the award or whatever is left (rounded down to the increment, so the budget ends at exactly zero, as in `db` mode), decrements the counter and records the reservation as in flight. Its keys share a `{campaignId}` hash tag (`campaign:{id}:remaining`, `:grant:<payment>`, `:inflight`), so each script touches one Redis Cluster slot. The daily cap still comes from Postgres and counts pending awards; a user's payments already run one at a time on their main account lock.
 
-**Crediting.** The award worker runs in every server (`CASHBACK_WORKER=off` disables it) and shares the queue through `FOR UPDATE SKIP LOCKED`. Each batch of up to 100 awards is one statement per campaign: one debit of the total, one credit per cash back account, all the ledger and award rows. It drains about 11,000 awards a second while 32 payers run, ahead of the ~6,000 payments a second the gate allows. An award the campaign account can't cover is marked failed and kept (still counted against the budget) for someone to resolve. The worker logs at error when pending awards are more than 30 s old, or any have failed.
+**Crediting.** The award worker runs in every server (`CASHBACK_WORKER=off` disables it) and shares the queue through `FOR UPDATE SKIP LOCKED`. Each batch of up to 100 awards is one statement per campaign: one debit of the total, one credit per cash back account, all the ledger and award rows. It credits in batches so it can keep ahead of the payments the gate allows. An award the campaign account can't cover is marked failed and kept (still counted against the budget) for someone to resolve. The worker logs at error when pending awards are more than 30 s old, or any have failed.
 
 **Failure handling:**
 
