@@ -126,7 +126,7 @@ func TestListAccounts(t *testing.T) {
 	}
 	want := `{"accounts":[` +
 		`{"id":"acc-main","kind":"main","balance":{"value":"12450000.00","currency":"IDR"}},` +
-		`{"id":"acc-cb","kind":"cashback","balance":{"value":"0.00","currency":"IDR"}}]}`
+		`{"id":"acc-cb","kind":"cashback","balance":{"value":"0.00","currency":"IDR"},"pending":{"value":"0.00","currency":"IDR"}}]}`
 	if got := w.Body.String(); got != want {
 		t.Errorf("body = %s\nwant   %s", got, want)
 	}

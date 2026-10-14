@@ -2,13 +2,15 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Amount, Button, Icon, Spinner, Text } from '@/components';
 import type { Money } from '@/lib/api';
-import { formatMoney } from '@/lib/format';
+import { formatMoney, isZeroMoney } from '@/lib/format';
 import { colors, radii, spacing } from '@/theme';
 
 type BalanceCardProps = {
   /** null while loading. */
   balance: Money | null;
   cashback: Money | null;
+  /** Cash back earned but not yet credited; shown when it isn't zero. */
+  cashbackPending?: Money | null;
   /** Shown in place of the balance when it couldn't be loaded. */
   error?: string | null;
   onRetry?: () => void;
@@ -19,7 +21,20 @@ type BalanceCardProps = {
 };
 
 /** Dark hero card on Home: available balance, cash back row and Pay. */
-export function BalanceCard({ balance, cashback, error, onRetry, onRedeem, onViewCashback, onPay }: BalanceCardProps) {
+export function BalanceCard({
+  balance,
+  cashback,
+  cashbackPending,
+  error,
+  onRetry,
+  onRedeem,
+  onViewCashback,
+  onPay,
+}: BalanceCardProps) {
+  const pending = cashbackPending && !isZeroMoney(cashbackPending) ? formatMoney(cashbackPending) : null;
+  const cashbackLabel = cashback
+    ? `Cash back ${formatMoney(cashback)}${pending ? `, plus ${pending} pending` : ''}. View history`
+    : 'Cash back. View history';
   return (
     <View style={styles.card}>
       <View style={styles.top}>
@@ -54,7 +69,7 @@ export function BalanceCard({ balance, cashback, error, onRetry, onRedeem, onVie
 
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={cashback ? `Cash back ${formatMoney(cashback)}. View history` : 'Cash back. View history'}
+        accessibilityLabel={cashbackLabel}
         onPress={onViewCashback}
         style={({ pressed }) => [styles.cashback, pressed && styles.cashbackPressed]}
       >
@@ -68,6 +83,11 @@ export function BalanceCard({ balance, cashback, error, onRetry, onRedeem, onVie
           <Text variant="numeric" color="onBrand">
             {cashback ? formatMoney(cashback) : '–'}
           </Text>
+          {pending ? (
+            <Text variant="micro" color="onBrandMuted">
+              {`+ ${pending} pending`}
+            </Text>
+          ) : null}
         </View>
         <Pressable
           accessibilityRole="button"

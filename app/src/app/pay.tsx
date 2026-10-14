@@ -61,7 +61,9 @@ export default function PayScreen() {
           currency: transaction.amount.currency,
           transactionId: transaction.id,
           createdAt: transaction.createdAt,
-          ...(cashback ? { cashbackAmount: cashback.amount.value, cashbackReason: cashback.reason } : {}),
+          ...(cashback
+            ? { cashbackAmount: cashback.amount.value, cashbackReason: cashback.reason, cashbackStatus: cashback.status }
+            : {}),
         },
       });
     } catch (e) {

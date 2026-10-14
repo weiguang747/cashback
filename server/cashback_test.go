@@ -32,7 +32,7 @@ func TestPaymentReportsCashback(t *testing.T) {
 
 		first := pay(router, andiID, "key-00000001", kopi)
 		for _, want := range []string{
-			`"cashback":{"amount":{"value":"1750.00","currency":"IDR"},"reason":"awarded"}`,
+			`"cashback":{"amount":{"value":"1750.00","currency":"IDR"},"reason":"awarded","status":"credited"}`,
 			// The payment row itself carries what it earned.
 			`"kind":"out","createdAt":"2026-10-13T08:00:00Z","cashback":{"value":"1750.00","currency":"IDR"}`,
 		} {
@@ -42,6 +42,32 @@ func TestPaymentReportsCashback(t *testing.T) {
 		}
 		if replay := pay(router, andiID, "key-00000001", kopi); replay.Body.String() != first.Body.String() {
 			t.Errorf("replay = %s, want the same cash back as %s", replay.Body, first.Body)
+		}
+	})
+
+	t.Run("awarded through the gate", func(t *testing.T) {
+		s := demoStore(0)
+		s.campaign, s.gate = launchCampaign(), "redis"
+		w := pay(testRouter(s), andiID, "key-00000001", kopi)
+		want := `"cashback":{"amount":{"value":"1750.00","currency":"IDR"},"reason":"awarded","status":"pending"}`
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("body missing %s\nbody: %s", want, w.Body)
+		}
+	})
+
+	t.Run("gate unavailable", func(t *testing.T) {
+		s := demoStore(0)
+		s.campaign, s.gate = launchCampaign(), "down"
+		w := pay(testRouter(s), andiID, "key-00000001", kopi)
+		if w.Code != 201 {
+			t.Fatalf("status = %d, want the payment to go ahead: %s", w.Code, w.Body)
+		}
+		want := `"cashback":{"amount":{"value":"0.00","currency":"IDR"},"reason":"unavailable","status":"credited"}`
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("body missing %s\nbody: %s", want, w.Body)
+		}
+		if strings.Count(w.Body.String(), `"cashback"`) != 1 {
+			t.Errorf("transaction shouldn't carry cashback when none was earned: %s", w.Body)
 		}
 	})
 

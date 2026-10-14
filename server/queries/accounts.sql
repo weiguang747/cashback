@@ -1,6 +1,9 @@
 -- name: ListAccounts :many
--- One user's accounts, main first.
-SELECT a.id, a.kind, a.currency, c.minor_unit, a.balance_minor
+-- One user's accounts, main first, with the cash back reserved for each
+-- but not yet credited (always 0 for a main account).
+SELECT a.id, a.kind, a.currency, c.minor_unit, a.balance_minor,
+       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM cashback_pending p WHERE p.cashback_account_id = a.id)::bigint
+           AS pending_minor
 FROM accounts a
 JOIN currencies c ON c.code = a.currency
 WHERE a.user_id = sqlc.arg('user_id')::uuid
@@ -49,9 +52,19 @@ SELECT balance_minor FROM accounts WHERE id = $1;
 -- A user's main and cash back accounts in one currency, locked in the
 -- money lock order: main first, then cash back. Rows are locked after the
 -- sort, so the ORDER BY is the lock order.
-SELECT a.id, a.kind, a.balance_minor, c.minor_unit
+--
+-- pending_minor is only shown to the user. It isn't locked: if this waited
+-- for the worker to credit an award, the award can be in both the balance
+-- and pending for this one response.
+SELECT a.id, a.kind, a.balance_minor, c.minor_unit,
+       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM cashback_pending p WHERE p.cashback_account_id = a.id)::bigint
+           AS pending_minor
 FROM accounts a
 JOIN currencies c ON c.code = a.currency
 WHERE a.user_id = sqlc.arg('user_id')::uuid AND a.currency = sqlc.arg('currency') AND a.kind IN ('main', 'cashback')
 ORDER BY a.kind = 'main' DESC
 FOR UPDATE OF a;
+
+-- name: PendingForAccount :one
+-- Cash back reserved for a cash back account but not yet credited.
+SELECT COALESCE(SUM(amount_minor), 0)::bigint FROM cashback_pending WHERE cashback_account_id = $1;

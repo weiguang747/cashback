@@ -29,6 +29,9 @@ type RedeemResult struct {
 	Transaction          db.GetTransactionByIdempotencyKeyRow
 	MainBalanceMinor     int64
 	CashbackBalanceMinor int64
+	// CashbackPendingMinor is reserved for the user but not yet credited, so
+	// not redeemable yet.
+	CashbackPendingMinor int64
 	MinorUnit            int16
 	Replayed             bool
 }
@@ -120,7 +123,8 @@ func Redeem(ctx context.Context, pool *pgxpool.Pool, p RedeemParams) (RedeemResu
 		AmountMinor: credit.AmountMinor, Currency: credit.Currency, MinorUnit: cashback.MinorUnit, CreatedAt: now,
 	}
 	return RedeemResult{
-		Transaction: row, MainBalanceMinor: mainBalance, CashbackBalanceMinor: cashbackLeft, MinorUnit: cashback.MinorUnit,
+		Transaction: row, MainBalanceMinor: mainBalance, CashbackBalanceMinor: cashbackLeft,
+		CashbackPendingMinor: cashback.PendingMinor, MinorUnit: cashback.MinorUnit,
 	}, nil
 }
 
@@ -148,8 +152,12 @@ func replayRedeem(ctx context.Context, pool *pgxpool.Pool, p RedeemParams, mainI
 	if err != nil {
 		return RedeemResult{}, err
 	}
+	pending, err := q.PendingForAccount(ctx, cashbackID)
+	if err != nil {
+		return RedeemResult{}, err
+	}
 	return RedeemResult{
 		Transaction: row, MainBalanceMinor: mainBalance, CashbackBalanceMinor: cashbackBalance,
-		MinorUnit: minorUnit, Replayed: true,
+		CashbackPendingMinor: pending, MinorUnit: minorUnit, Replayed: true,
 	}, nil
 }

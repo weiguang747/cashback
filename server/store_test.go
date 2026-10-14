@@ -38,6 +38,10 @@ type fakeStore struct {
 	// and what Pay reports earning (5% when a campaign is set).
 	campaign     *db.GetCampaignStatusRow
 	cashbackTxns map[string][]db.ListCashbackTransactionsRow // by user id
+	// gate is how Pay reports cash back: "" (credited under the campaign
+	// lock), "redis" (pending, credited by the worker later) or "down"
+	// (the gate failed, so nothing was earned: unavailable).
+	gate string
 }
 
 func (f fakeStore) GetUser(_ context.Context, id string) (db.GetUserRow, error) {
@@ -201,6 +205,12 @@ func (f fakeStore) Pay(_ context.Context, p database.PayParams) (database.PayRes
 			var cb *database.CashbackResult
 			if f.campaign != nil {
 				cb = &database.CashbackResult{CampaignID: f.campaign.ID, AmountMinor: p.AmountMinor / 20, Reason: cashback.Awarded}
+				switch f.gate {
+				case "redis":
+					cb.Pending = true
+				case "down":
+					cb.AmountMinor, cb.Reason = 0, cashback.Unavailable
+				}
 			}
 			return database.PayResult{Transaction: row, BalanceMinor: a.BalanceMinor, Cashback: cb}, nil
 		}
@@ -232,7 +242,7 @@ func (f fakeStore) Redeem(_ context.Context, p database.RedeemParams) (database.
 			return database.RedeemResult{}, database.ErrKeyReused
 		}
 		return database.RedeemResult{Transaction: row, MainBalanceMinor: main.BalanceMinor,
-			CashbackBalanceMinor: cb.BalanceMinor, MinorUnit: cb.MinorUnit, Replayed: true}, nil
+			CashbackBalanceMinor: cb.BalanceMinor, CashbackPendingMinor: cb.PendingMinor, MinorUnit: cb.MinorUnit, Replayed: true}, nil
 	}
 	if cb.BalanceMinor < p.AmountMinor {
 		return database.RedeemResult{}, database.ErrInsufficientFunds
@@ -246,7 +256,7 @@ func (f fakeStore) Redeem(_ context.Context, p database.RedeemParams) (database.
 	}
 	f.paid[p.IdempotencyKey] = row
 	return database.RedeemResult{Transaction: row, MainBalanceMinor: main.BalanceMinor,
-		CashbackBalanceMinor: cb.BalanceMinor, MinorUnit: cb.MinorUnit}, nil
+		CashbackBalanceMinor: cb.BalanceMinor, CashbackPendingMinor: cb.PendingMinor, MinorUnit: cb.MinorUnit}, nil
 }
 
 // fakeIdem is an in-memory idempotency.Store.

@@ -27,6 +27,8 @@ type redemption struct {
 	Transaction     transaction `json:"transaction"`     // the credit on the main account
 	Balance         money.Money `json:"balance"`         // main account after redeeming
 	CashbackBalance money.Money `json:"cashbackBalance"` // what's left to redeem
+	// Cash back earned but not yet credited; redeemable once it is.
+	CashbackPending money.Money `json:"cashbackPending"`
 }
 
 type redeemResponse struct {
@@ -95,6 +97,7 @@ func redeemCashback(s store, idem idempotency.Store) gin.HandlerFunc {
 				Transaction:     toTransaction(txRow(result.Transaction)),
 				Balance:         m(result.MainBalanceMinor),
 				CashbackBalance: m(result.CashbackBalanceMinor),
+				CashbackPending: m(result.CashbackPendingMinor),
 			}}}, nil
 		})
 	}

@@ -787,3 +787,47 @@ func TestReplayReportsPendingAward(t *testing.T) {
 	}
 	assertLedger(t, e.pool)
 }
+
+// Pending cash back shows with the account but can't be redeemed until the
+// worker credits it.
+func TestPendingCashbackIsShownButNotRedeemable(t *testing.T) {
+	e := newGateEnv(t)
+	ctx := context.Background()
+	e.launchGated(t, 1_000_000_000, GateRedis)
+	u := payingUser(t, e.pool, 1_000_000_000)
+	e.pay(t, u, 3_500_000)
+
+	pendingOf := func() int64 {
+		rows, err := db.New(e.pool).ListAccounts(ctx, u.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if r.Kind == "cashback" {
+				return r.PendingMinor
+			}
+		}
+		t.Fatal("no cash back account listed")
+		return 0
+	}
+	if p := pendingOf(); p != 175_000 {
+		t.Errorf("listed pending = %d, want 175000", p)
+	}
+	_, err := Redeem(ctx, e.pool, RedeemParams{UserID: u.id, Currency: "IDR", AmountMinor: 175_000, IdempotencyKey: "redeem-pending-1"})
+	if !errors.Is(err, ErrInsufficientFunds) {
+		t.Fatalf("redeeming pending cash back = %v, want ErrInsufficientFunds", err)
+	}
+
+	creditAll(t, e.pool)
+	if p := pendingOf(); p != 0 {
+		t.Errorf("listed pending = %d after crediting, want 0", p)
+	}
+	r, err := Redeem(ctx, e.pool, RedeemParams{UserID: u.id, Currency: "IDR", AmountMinor: 175_000, IdempotencyKey: "redeem-pending-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.CashbackBalanceMinor != 0 || r.CashbackPendingMinor != 0 {
+		t.Errorf("after redeeming = balance %d, pending %d; want 0 and 0", r.CashbackBalanceMinor, r.CashbackPendingMinor)
+	}
+	assertLedger(t, e.pool)
+}

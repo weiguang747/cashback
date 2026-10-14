@@ -18,7 +18,8 @@ export function recordPayment(payment: Payment) {
   if (payment.cashback) {
     // Today's earnings and the budget moved; the response doesn't say how much is left.
     invalidate(CAMPAIGN_KEY);
-    // Cash back landed on an account whose new balance the response doesn't carry.
+    // Cash back landed (or is pending) on an account whose new balance the
+    // response doesn't carry.
     if (!isZeroMoney(payment.cashback.amount)) invalidate(ACCOUNTS_KEY);
   }
 }
@@ -26,13 +27,15 @@ export function recordPayment(payment: Payment) {
 /** Applies a completed redemption's response. */
 export function recordRedemption(redemption: Redemption) {
   setBalance('main', redemption.balance);
-  setBalance('cashback', redemption.cashbackBalance);
+  setBalance('cashback', redemption.cashbackBalance, redemption.cashbackPending);
   addRecentTransaction(redemption.transaction);
 }
 
-function setBalance(kind: Account['kind'], balance: Money) {
+function setBalance(kind: Account['kind'], balance: Money, pending?: Money) {
   updateCached<Account[]>(ACCOUNTS_KEY, (accounts) =>
-    accounts.map((a) => (a.kind === kind && a.balance.currency === balance.currency ? { ...a, balance } : a)),
+    accounts.map((a) =>
+      a.kind === kind && a.balance.currency === balance.currency ? { ...a, balance, ...(pending ? { pending } : {}) } : a,
+    ),
   );
 }
 

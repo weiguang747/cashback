@@ -5,8 +5,15 @@ import type { Money } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { colors, radii, spacing } from '@/theme';
 
+type CashbackEarnedCardProps = {
+  amount: Money;
+  /** Earned but not yet credited: the server adds it to the balance shortly. */
+  pending?: boolean;
+  onPress: () => void;
+};
+
 /** Gold card on the success screen showing cash back earned. */
-export function CashbackEarnedCard({ amount, onPress }: { amount: Money; onPress: () => void }) {
+export function CashbackEarnedCard({ amount, pending = false, onPress }: CashbackEarnedCardProps) {
   return (
     <Pressable
       accessibilityRole="button"
@@ -22,7 +29,7 @@ export function CashbackEarnedCard({ amount, onPress }: { amount: Money; onPress
           You earned {formatMoney(amount)} cash back
         </Text>
         <Text variant="caption" color="onRewardMuted">
-          Added to your cash back balance
+          {pending ? 'On its way to your cash back balance' : 'Added to your cash back balance'}
         </Text>
       </View>
       <Text variant="label" color="onReward">

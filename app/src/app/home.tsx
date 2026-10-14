@@ -1,12 +1,14 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button, EmptyState, Screen, SectionHeader, Spinner, Text, Tile, TransactionRow } from '@/components';
 import { CashbackBanner } from '@/features/cashback/CashbackBanner';
 import { BalanceCard } from '@/features/wallet/BalanceCard';
-import { useAccounts } from '@/lib/accounts';
+import { ACCOUNTS_KEY, useAccounts } from '@/lib/accounts';
+import { invalidate } from '@/lib/cache';
 import { useCampaign } from '@/lib/cashback';
+import { isZeroMoney } from '@/lib/format';
 import { greeting } from '@/lib/locale';
 import { clearUser, useUser } from '@/lib/session';
 import { dayLabel, timeLabel, useRecentTransactions } from '@/lib/transactions';
@@ -14,6 +16,8 @@ import { colors, radii, spacing } from '@/theme';
 
 /** How many transactions Home shows before "See all". */
 const RECENT_COUNT = 6;
+/** How long after seeing pending cash back Home checks the balance again. */
+const PENDING_RECHECK_MS = 2_000;
 
 export default function HomeScreen() {
   const user = useUser();
@@ -38,6 +42,20 @@ export default function HomeScreen() {
       refreshTransactions();
     }, [refreshAccounts, refreshCampaign, refreshTransactions]),
   );
+
+  // Pending cash back is credited within moments of paying. Check once more
+  // shortly after seeing some, so it moves into the balance without the
+  // user having to leave and come back.
+  const pending = accounts.cashback?.pending;
+  const pendingValue = pending && !isZeroMoney(pending) ? pending.value : null;
+  useEffect(() => {
+    if (!pendingValue) return;
+    const timer = setTimeout(() => {
+      invalidate(ACCOUNTS_KEY);
+      refreshAccounts();
+    }, PENDING_RECHECK_MS);
+    return () => clearTimeout(timer);
+  }, [pendingValue, refreshAccounts]);
 
   // Pull to refresh fetches everything on Home again, whether or not it's
   // fresh, and keeps the spinner up until all of it has answered. A failed
@@ -95,6 +113,7 @@ export default function HomeScreen() {
         <BalanceCard
           balance={accounts.main?.balance ?? null}
           cashback={accounts.cashback?.balance ?? null}
+          cashbackPending={accounts.cashback?.pending ?? null}
           error={accounts.error}
           onRetry={accounts.reload}
           onRedeem={goRedeem}

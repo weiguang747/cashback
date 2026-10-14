@@ -64,6 +64,8 @@ export type Account = {
   id: string;
   kind: 'main' | 'cashback';
   balance: Money;
+  /** Cash back accounts only: earned but not yet in `balance` (credited shortly). Not redeemable yet. */
+  pending?: Money;
 };
 
 /** The signed-in user's accounts, main first. */
@@ -73,14 +75,17 @@ export async function getAccounts(opts: { signal?: AbortSignal } = {}): Promise<
 }
 
 export type PaymentInput = { merchantId: string; merchantName: string; amount: Money };
-export type CashbackReason = 'awarded' | 'below_minimum' | 'daily_cap_reached' | 'budget_exhausted';
+/** `unavailable`: the server couldn't check the budget, so the payment went ahead without cash back. */
+export type CashbackReason = 'awarded' | 'below_minimum' | 'daily_cap_reached' | 'budget_exhausted' | 'unavailable';
+/** `pending`: earned, and on its way to the cash back balance. A replayed response can still say pending. */
+export type CashbackStatus = 'pending' | 'credited';
 
 export type Payment = {
   transaction: Transaction;
   /** Main account balance after the payment. */
   balance: Money;
   /** Null when no cash back campaign was live. */
-  cashback: { amount: Money; reason: CashbackReason } | null;
+  cashback: { amount: Money; reason: CashbackReason; status: CashbackStatus } | null;
 };
 
 export type Campaign = {
@@ -142,6 +147,8 @@ export type Redemption = {
   balance: Money;
   /** Cash back left to redeem. */
   cashbackBalance: Money;
+  /** Cash back earned but not yet credited; redeemable once it is. */
+  cashbackPending: Money;
 };
 
 /**

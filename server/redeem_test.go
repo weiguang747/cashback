@@ -43,6 +43,7 @@ func TestRedeemCashback(t *testing.T) {
 		`"amount":{"value":"44750.00","currency":"IDR"},"kind":"cashback"`,
 		`"balance":{"value":"12494750.00","currency":"IDR"}`,
 		`"cashbackBalance":{"value":"0.00","currency":"IDR"}`,
+		`"cashbackPending":{"value":"0.00","currency":"IDR"}`,
 	} {
 		if !strings.Contains(first.Body.String(), want) {
 			t.Errorf("body missing %s\nbody: %s", want, first.Body)

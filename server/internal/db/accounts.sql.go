@@ -73,7 +73,9 @@ func (q *Queries) GetMainAccount(ctx context.Context, arg GetMainAccountParams) 
 }
 
 const listAccounts = `-- name: ListAccounts :many
-SELECT a.id, a.kind, a.currency, c.minor_unit, a.balance_minor
+SELECT a.id, a.kind, a.currency, c.minor_unit, a.balance_minor,
+       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM cashback_pending p WHERE p.cashback_account_id = a.id)::bigint
+           AS pending_minor
 FROM accounts a
 JOIN currencies c ON c.code = a.currency
 WHERE a.user_id = $1::uuid
@@ -86,9 +88,11 @@ type ListAccountsRow struct {
 	Currency     string
 	MinorUnit    int16
 	BalanceMinor int64
+	PendingMinor int64
 }
 
-// One user's accounts, main first.
+// One user's accounts, main first, with the cash back reserved for each
+// but not yet credited (always 0 for a main account).
 func (q *Queries) ListAccounts(ctx context.Context, userID string) ([]ListAccountsRow, error) {
 	rows, err := q.db.Query(ctx, listAccounts, userID)
 	if err != nil {
@@ -104,6 +108,7 @@ func (q *Queries) ListAccounts(ctx context.Context, userID string) ([]ListAccoun
 			&i.Currency,
 			&i.MinorUnit,
 			&i.BalanceMinor,
+			&i.PendingMinor,
 		); err != nil {
 			return nil, err
 		}
@@ -116,7 +121,9 @@ func (q *Queries) ListAccounts(ctx context.Context, userID string) ([]ListAccoun
 }
 
 const lockUserAccounts = `-- name: LockUserAccounts :many
-SELECT a.id, a.kind, a.balance_minor, c.minor_unit
+SELECT a.id, a.kind, a.balance_minor, c.minor_unit,
+       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM cashback_pending p WHERE p.cashback_account_id = a.id)::bigint
+           AS pending_minor
 FROM accounts a
 JOIN currencies c ON c.code = a.currency
 WHERE a.user_id = $1::uuid AND a.currency = $2 AND a.kind IN ('main', 'cashback')
@@ -134,11 +141,16 @@ type LockUserAccountsRow struct {
 	Kind         string
 	BalanceMinor int64
 	MinorUnit    int16
+	PendingMinor int64
 }
 
 // A user's main and cash back accounts in one currency, locked in the
 // money lock order: main first, then cash back. Rows are locked after the
 // sort, so the ORDER BY is the lock order.
+//
+// pending_minor is only shown to the user. It isn't locked: if this waited
+// for the worker to credit an award, the award can be in both the balance
+// and pending for this one response.
 func (q *Queries) LockUserAccounts(ctx context.Context, arg LockUserAccountsParams) ([]LockUserAccountsRow, error) {
 	rows, err := q.db.Query(ctx, lockUserAccounts, arg.UserID, arg.Currency)
 	if err != nil {
@@ -153,6 +165,7 @@ func (q *Queries) LockUserAccounts(ctx context.Context, arg LockUserAccountsPara
 			&i.Kind,
 			&i.BalanceMinor,
 			&i.MinorUnit,
+			&i.PendingMinor,
 		); err != nil {
 			return nil, err
 		}
@@ -162,6 +175,18 @@ func (q *Queries) LockUserAccounts(ctx context.Context, arg LockUserAccountsPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const pendingForAccount = `-- name: PendingForAccount :one
+SELECT COALESCE(SUM(amount_minor), 0)::bigint FROM cashback_pending WHERE cashback_account_id = $1
+`
+
+// Cash back reserved for a cash back account but not yet credited.
+func (q *Queries) PendingForAccount(ctx context.Context, cashbackAccountID string) (int64, error) {
+	row := q.db.QueryRow(ctx, pendingForAccount, cashbackAccountID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const reconcileAccounts = `-- name: ReconcileAccounts :many

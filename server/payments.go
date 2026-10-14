@@ -39,8 +39,14 @@ type payment struct {
 
 type paymentCashback struct {
 	Amount money.Money `json:"amount"`
-	// "awarded", "below_minimum", "daily_cap_reached" or "budget_exhausted".
+	// "awarded", "below_minimum", "daily_cap_reached", "budget_exhausted",
+	// or "unavailable" (the budget couldn't be checked; the payment went
+	// ahead without cash back).
 	Reason string `json:"reason"`
+	// "pending": earned, and credited to the cash back balance shortly.
+	// "credited": already in the cash back balance (or nothing earned).
+	// A replayed response is the original, so it can still say pending.
+	Status string `json:"status"`
 }
 
 type paymentResponse struct {
@@ -124,7 +130,8 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 			// to trace a payment, and the database has the rest.
 			attrs := []any{"transaction_id", result.Transaction.ID, "replayed", result.Replayed}
 			if cb := result.Cashback; cb != nil {
-				attrs = append(attrs, "campaign_id", cb.CampaignID, "cashback_minor", cb.AmountMinor, "cashback_reason", string(cb.Reason))
+				attrs = append(attrs, "campaign_id", cb.CampaignID, "cashback_minor", cb.AmountMinor, "cashback_reason", string(cb.Reason),
+					"cashback_pending", cb.Pending)
 				if cb.CampaignEnded {
 					log.Info("campaign ended: budget used up", "campaign_id", cb.CampaignID)
 				}
@@ -138,7 +145,11 @@ func createPayment(s store, idem idempotency.Store) gin.HandlerFunc {
 			var cb *paymentCashback
 			if result.Cashback != nil {
 				earned := m(result.Cashback.AmountMinor)
-				cb = &paymentCashback{Amount: earned, Reason: string(result.Cashback.Reason)}
+				status := "credited"
+				if result.Cashback.Pending {
+					status = "pending"
+				}
+				cb = &paymentCashback{Amount: earned, Reason: string(result.Cashback.Reason), Status: status}
 				if result.Cashback.AmountMinor > 0 {
 					txn.Cashback = &earned
 				}
