@@ -75,7 +75,15 @@ func LaunchCampaign(ctx context.Context, pool *pgxpool.Pool, p LaunchParams) (st
 
 // EndCampaign ends a campaign now and returns any unspent budget to the
 // funding account. It returns the amount returned, in minor units.
-func EndCampaign(ctx context.Context, pool *pgxpool.Pool, id string) (int64, error) {
+//
+// A campaign using the Redis gate is switched back to db first (r does
+// that; see Reconciler.SetGate), so no reservation is in flight when the
+// leftover is worked out. Awards reserved but not yet credited stay in the
+// campaign account for the worker; only the rest goes back.
+func EndCampaign(ctx context.Context, pool *pgxpool.Pool, r *Reconciler, id string) (int64, error) {
+	if err := endGate(ctx, pool, r, id); err != nil {
+		return 0, err
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return 0, err
@@ -94,16 +102,48 @@ func EndCampaign(ctx context.Context, pool *pgxpool.Pool, id string) (int64, err
 	if err := q.CloseCampaign(ctx, db.CloseCampaignParams{ID: id, At: time.Now()}); err != nil {
 		return 0, fmt.Errorf("end campaign: %w", err)
 	}
-	if c.BalanceMinor > 0 {
+	if c.BudgetGate != GateDB && (c.EndsAt == nil || c.EndsAt.After(c.DbNow)) {
+		return 0, fmt.Errorf("budget gate switched to %s meanwhile; try again", c.BudgetGate)
+	}
+	// The worker can't credit these while the campaign is locked, so the
+	// sum is exact.
+	pending, err := q.PendingForCampaign(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("pending awards: %w", err)
+	}
+	leftover := c.BalanceMinor - pending
+	if leftover > 0 {
 		fundingID, err := q.GetFundingAccount(ctx, c.Currency)
 		if err != nil {
 			return 0, fmt.Errorf("funding account: %w", err)
 		}
-		if err := transfer(ctx, q, c.AccountID, fundingID, c.Currency, c.BalanceMinor, "Campaign ended", c.Name); err != nil {
+		if err := transfer(ctx, q, c.AccountID, fundingID, c.Currency, leftover, "Campaign ended", c.Name); err != nil {
 			return 0, err
 		}
 	}
-	return c.BalanceMinor, tx.Commit(ctx)
+	return max(leftover, 0), tx.Commit(ctx)
+}
+
+// endGate switches a live campaign that uses the Redis gate back to db.
+func endGate(ctx context.Context, pool *pgxpool.Pool, r *Reconciler, id string) error {
+	// Outside a transaction, the lock lasts only for the statement.
+	c, err := db.New(pool).LockCampaign(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNoCampaign
+	}
+	if err != nil {
+		return err
+	}
+	if c.BudgetGate == GateDB || (c.EndsAt != nil && !c.EndsAt.After(c.DbNow)) {
+		return nil
+	}
+	if r == nil {
+		return ErrGateNeeded
+	}
+	if err := r.SetGate(ctx, id, GateDB); err != nil && !errors.Is(err, ErrCampaignOver) {
+		return fmt.Errorf("switch budget gate to db: %w", err)
+	}
+	return nil
 }
 
 // transfer moves amount between two accounts as a pair of transactions.

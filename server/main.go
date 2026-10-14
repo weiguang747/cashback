@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 
+	"cashback/server/internal/budgetgate"
 	"cashback/server/internal/database"
 	"cashback/server/internal/httpx"
 	"cashback/server/internal/idempotency"
@@ -65,6 +66,28 @@ func main() {
 		fatal("redis unavailable", logx.Err(err), "redis", describeURL(redisURL))
 	}
 
+	// The budget gate gets its own client: a reservation runs inside the
+	// payment's transaction, so it must fail fast (and fail closed) rather
+	// than retry or wait behind slower Redis calls.
+	gateOpts := *redisOpts
+	gateOpts.DialTimeout = 200 * time.Millisecond
+	gateOpts.ReadTimeout = 100 * time.Millisecond
+	gateOpts.WriteTimeout = 100 * time.Millisecond
+	gateOpts.MaxRetries = -1
+	gateRedis := redis.NewClient(&gateOpts)
+	defer gateRedis.Close()
+	gate := database.NewCashbackGate(pool, budgetgate.NewRedis(gateRedis))
+
+	// Background work: credit awards reserved by the gate, and keep the
+	// Redis counters matching the database. Every server may run both.
+	background, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
+	if os.Getenv("CASHBACK_WORKER") != "off" {
+		go database.RunAwardWorker(background, pool)
+		reconciler := &database.Reconciler{Pool: pool, Gate: budgetgate.NewRedis(rdb)}
+		go reconciler.Run(background, database.ReconcileInterval)
+	}
+
 	slog.Info("server starting", "port", port, "database", describeURL(dbURL), "redis", describeURL(redisURL),
 		"gin_mode", gin.Mode())
 
@@ -72,7 +95,7 @@ func main() {
 	// inside a container, localhost is unreachable from your Mac.
 	srv := &http.Server{
 		Addr:    ":" + port,
-		Handler: setupRouter(newPgStore(pool), idempotency.NewRedis(rdb)),
+		Handler: setupRouter(newPgStore(pool, gate), idempotency.NewRedis(rdb)),
 		// Slow or stalled clients can't hold a connection open forever.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -102,6 +125,10 @@ func main() {
 		slog.Error("shutdown did not finish; dropping remaining requests", logx.Err(err))
 		return
 	}
+	// Let payments' last releases and shadow mirrors finish. Pending awards
+	// wait in the database for the next worker.
+	stopBackground()
+	gate.Wait()
 	slog.Info("server stopped")
 }
 

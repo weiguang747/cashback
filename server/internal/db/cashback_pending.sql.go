@@ -94,15 +94,18 @@ func (q *Queries) ClearGateDegraded(ctx context.Context, id string) error {
 }
 
 const committedReservations = `-- name: CommittedReservations :many
-SELECT id::uuid AS payment_transaction_id
-FROM unnest($1::uuid[]) AS id
-WHERE EXISTS (SELECT 1 FROM cashback_pending p WHERE p.payment_transaction_id = id)
-   OR EXISTS (SELECT 1 FROM cashback_awards ca WHERE ca.payment_transaction_id = id)
+SELECT r.payment_id::uuid AS payment_transaction_id
+FROM unnest($1::uuid[]) AS r (payment_id)
+WHERE EXISTS (SELECT 1 FROM cashback_pending p WHERE p.payment_transaction_id = r.payment_id)
+   OR EXISTS (SELECT 1 FROM cashback_awards ca WHERE ca.payment_transaction_id = r.payment_id)
 `
 
 // Which of these payments' reservations reached the database (pending or
 // credited). The reconciler runs this in the same REPEATABLE READ snapshot
 // as CampaignBudgetLeft, so the two agree.
+// The column is always qualified (r.payment_id): a bare name inside the
+// subqueries would resolve to the subquery's own table first
+// (cashback_awards.id), silently matching nothing.
 func (q *Queries) CommittedReservations(ctx context.Context, paymentIds []string) ([]string, error) {
 	rows, err := q.db.Query(ctx, committedReservations, paymentIds)
 	if err != nil {
@@ -265,17 +268,17 @@ func (q *Queries) MarkPendingFailed(ctx context.Context, paymentTransactionID st
 	return err
 }
 
-const oldestPendingAward = `-- name: OldestPendingAward :one
-SELECT MIN(created_at)::timestamptz AS oldest FROM cashback_pending WHERE failed_at IS NULL
+const oldestPendingAgeSecs = `-- name: OldestPendingAgeSecs :one
+SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int FROM cashback_pending WHERE failed_at IS NULL
 `
 
-// When the oldest award still waiting to be credited was reserved; NULL when
-// the queue is empty. For the backlog alert.
-func (q *Queries) OldestPendingAward(ctx context.Context) (time.Time, error) {
-	row := q.db.QueryRow(ctx, oldestPendingAward)
-	var oldest time.Time
-	err := row.Scan(&oldest)
-	return oldest, err
+// How long the oldest award still waiting to be credited has waited, in
+// seconds (0 when none is). For the backlog alert.
+func (q *Queries) OldestPendingAgeSecs(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, oldestPendingAgeSecs)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const pendingForCampaign = `-- name: PendingForCampaign :one

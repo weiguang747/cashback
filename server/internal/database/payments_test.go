@@ -22,6 +22,7 @@ func payingUser(t *testing.T, pool *pgxpool.Pool, balanceMinor int64) testUser {
 	q := db.New(pool)
 	u := createUser(t, q, fmt.Sprintf("pay-%d@test.example", time.Now().UnixNano()), "IDR")
 	t.Cleanup(func() {
+		pool.Exec(ctx, "DELETE FROM cashback_pending WHERE user_id = $1", u.id)
 		pool.Exec(ctx, "DELETE FROM cashback_awards WHERE user_id = $1", u.id)
 		pool.Exec(ctx, "DELETE FROM transactions WHERE account_id IN ($1, $2)", u.main, u.cashback)
 		pool.Exec(ctx, "DELETE FROM accounts WHERE user_id = $1", u.id)

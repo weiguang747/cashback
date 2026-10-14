@@ -12,6 +12,9 @@ const (
 	BelowMinimum    Reason = "below_minimum"
 	DailyCapReached Reason = "daily_cap_reached"
 	BudgetExhausted Reason = "budget_exhausted"
+	// Unavailable: the budget couldn't be checked (the Redis gate failed or
+	// is briefly closed), so the payment went ahead without cash back.
+	Unavailable Reason = "unavailable"
 )
 
 // Rules are a campaign's terms, in minor units.

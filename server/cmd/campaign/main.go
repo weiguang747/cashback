@@ -5,10 +5,17 @@
 //	    --budget 10000000 --round-to 1 --starts-at now
 //	DATABASE_URL=postgres://... go run ./cmd/campaign list
 //	DATABASE_URL=postgres://... go run ./cmd/campaign end <campaign-id>
+//	DATABASE_URL=postgres://... REDIS_URL=redis://... go run ./cmd/campaign gate <campaign-id> redis
+//	DATABASE_URL=postgres://... REDIS_URL=redis://... go run ./cmd/campaign reconcile <campaign-id>
 //
 // Launching moves the budget from the currency's funding account into a new
 // campaign account; ending returns whatever is left. Amounts are in major
 // units (rupiah), parsed exactly.
+//
+// gate switches how the budget is enforced (db, shadow or redis; see
+// database.Reconciler.SetGate). reconcile runs one reconciler pass and
+// corrects the Redis counter. Both need REDIS_URL (default
+// redis://localhost:6379/0), and so does ending a campaign that uses Redis.
 package main
 
 import (
@@ -22,7 +29,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
+	"cashback/server/internal/budgetgate"
 	"cashback/server/internal/database"
 	"cashback/server/internal/db"
 	"cashback/server/internal/money"
@@ -31,7 +40,9 @@ import (
 const usage = `usage:
   campaign create --name NAME --budget AMOUNT [flags]   launch a campaign
   campaign list                                          show all campaigns
-  campaign end CAMPAIGN_ID                               end now and return the unspent budget`
+  campaign end CAMPAIGN_ID                               end now and return the unspent budget
+  campaign gate CAMPAIGN_ID db|shadow|redis              switch how the budget is enforced
+  campaign reconcile CAMPAIGN_ID                         check the Redis counter and correct drift`
 
 func main() {
 	log.SetFlags(0)
@@ -58,7 +69,20 @@ func main() {
 		if len(os.Args) != 3 {
 			log.Fatal(usage)
 		}
-		err = end(ctx, pool, os.Args[2])
+		err = end(ctx, pool, reconciler(ctx, pool, false), os.Args[2])
+	case "gate":
+		if len(os.Args) != 4 {
+			log.Fatal(usage)
+		}
+		err = reconciler(ctx, pool, true).SetGate(ctx, os.Args[2], os.Args[3])
+		if err == nil {
+			fmt.Printf("%s now uses the %s budget gate\n", os.Args[2], os.Args[3])
+		}
+	case "reconcile":
+		if len(os.Args) != 3 {
+			log.Fatal(usage)
+		}
+		err = reconcile(ctx, reconciler(ctx, pool, true), os.Args[2])
 	default:
 		log.Fatal(usage)
 	}
@@ -146,8 +170,46 @@ func create(ctx context.Context, pool *pgxpool.Pool, args []string) error {
 	return nil
 }
 
-func end(ctx context.Context, pool *pgxpool.Pool, id string) error {
-	returned, err := database.EndCampaign(ctx, pool, id)
+// reconciler connects to Redis. Without it (required false and Redis
+// unreachable), only campaigns that don't use the gate can be ended.
+func reconciler(ctx context.Context, pool *pgxpool.Pool, required bool) *database.Reconciler {
+	r := &database.Reconciler{Pool: pool}
+	url := os.Getenv("REDIS_URL")
+	if url == "" {
+		url = "redis://localhost:6379/0"
+	}
+	opts, err := redis.ParseURL(url)
+	if err != nil {
+		log.Fatalf("invalid REDIS_URL: %v", err)
+	}
+	client := redis.NewClient(opts)
+	if err := client.Ping(ctx).Err(); err != nil {
+		if required {
+			log.Fatalf("redis unavailable: %v", err)
+		}
+		return r
+	}
+	r.Gate = budgetgate.NewRedis(client)
+	return r
+}
+
+func reconcile(ctx context.Context, r *database.Reconciler, id string) error {
+	res, err := r.Reconcile(ctx, id, true)
+	if err != nil {
+		return err
+	}
+	if !res.Open {
+		fmt.Printf("%s: counter closed (gate db, or being switched); pruned %d, released %d, %d in flight\n",
+			id, res.Pruned, res.Released, res.InFlight)
+		return nil
+	}
+	fmt.Printf("%s: drift %d minor units (corrected: %v); pruned %d, released %d, %d in flight\n",
+		id, res.Drift, res.Corrected, res.Pruned, res.Released, res.InFlight)
+	return nil
+}
+
+func end(ctx context.Context, pool *pgxpool.Pool, r *database.Reconciler, id string) error {
+	returned, err := database.EndCampaign(ctx, pool, r, id)
 	if err != nil {
 		return err
 	}
@@ -168,7 +230,7 @@ func list(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tSTATUS\tRATE\tMIN\tDAILY CAP\tREMAINING / BUDGET\tSTARTS\tENDS")
+	fmt.Fprintln(w, "ID\tNAME\tSTATUS\tGATE\tRATE\tMIN\tDAILY CAP\tREMAINING / BUDGET\tSTARTS\tENDS")
 	now := time.Now()
 	for _, c := range rows {
 		m := func(minor int64) string {
@@ -181,12 +243,16 @@ func list(ctx context.Context, pool *pgxpool.Pool) error {
 		case c.EndsAt != nil && !c.EndsAt.After(now):
 			status = "ended"
 		}
+		gate := c.BudgetGate
+		if c.GateDegraded {
+			gate += " (degraded)"
+		}
 		ends := "-"
 		if c.EndsAt != nil {
 			ends = c.EndsAt.In(time.Local).Format(time.DateTime)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%.2f%%\t%s\t%s\t%s / %s %s\t%s\t%s\n",
-			c.ID, c.Name, status, float64(c.RateBps)/100, m(c.MinSpendMinor), m(c.DailyCapMinor),
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%.2f%%\t%s\t%s\t%s / %s %s\t%s\t%s\n",
+			c.ID, c.Name, status, gate, float64(c.RateBps)/100, m(c.MinSpendMinor), m(c.DailyCapMinor),
 			m(c.RemainingMinor), m(c.BudgetMinor), c.Currency, c.StartsAt.In(time.Local).Format(time.DateTime), ends)
 	}
 	return w.Flush()

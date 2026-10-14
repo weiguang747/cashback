@@ -41,6 +41,7 @@ func launch(t *testing.T, pool *pgxpool.Pool, p LaunchParams) (id, accountID str
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		pool.Exec(ctx, "DELETE FROM cashback_pending WHERE campaign_id = $1", id)
 		pool.Exec(ctx, "DELETE FROM cashback_awards WHERE campaign_id = $1", id)
 		pool.Exec(ctx, "DELETE FROM campaigns WHERE id = $1", id)
 		pool.Exec(ctx, "DELETE FROM transactions WHERE account_id = $1", accountID)
@@ -286,7 +287,7 @@ func TestEndCampaignReturnsUnspentBudget(t *testing.T) {
 	u := payingUser(t, pool, 1_000_000_000)
 
 	wantCashback(t, payAt(t, pool, u, 3_500_000, time.Now()), 175_000, cashback.Awarded)
-	returned, err := EndCampaign(ctx, pool, id)
+	returned, err := EndCampaign(ctx, pool, nil, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +402,7 @@ func TestEndCampaignDuringPayments(t *testing.T) {
 	}
 	wg.Go(func() {
 		time.Sleep(5 * time.Millisecond)
-		if _, err := EndCampaign(ctx, pool, id); err != nil {
+		if _, err := EndCampaign(ctx, pool, nil, id); err != nil {
 			t.Errorf("end campaign: %v", err)
 		}
 	})
@@ -425,9 +426,10 @@ func TestCashbackBelowMinimumWithoutCashbackAccount(t *testing.T) {
 	wantCashback(t, payAt(t, pool, u, 1_000_000, noon), 0, cashback.BelowMinimum)
 }
 
-// An awarding payment is six round trips: BEGIN, the debit, the payment
-// row, the campaign lock, the award, COMMIT. Every awarding payment queues
-// on the campaign lock, so a statement added here costs throughput.
+// An awarding payment in db mode is seven round trips: BEGIN, the debit,
+// the payment row, finding the campaign and its gate (no lock), the
+// campaign lock, the award, COMMIT. Every awarding payment queues on the
+// campaign lock, so a statement added from the lock on costs throughput.
 func TestPayRoundTrips(t *testing.T) {
 	pool := openTestDB(t)
 	launch(t, pool, launchParams(1_000_000_000))
@@ -442,8 +444,8 @@ func TestPayRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantCashback(t, r, 175_000, cashback.Awarded)
-	if n := stats.Queries(); n != 6 {
-		t.Errorf("awarding payment ran %d queries, want 6", n)
+	if n := stats.Queries(); n != 7 {
+		t.Errorf("awarding payment ran %d queries, want 7", n)
 	}
 	if stats.QueryTime() <= 0 || stats.WaitTime() <= 0 {
 		t.Errorf("stats = %v query, %v wait; want both measured", stats.QueryTime(), stats.WaitTime())

@@ -206,7 +206,10 @@ RETURNING id;
 -- Locks the campaign and its budget account, in that order (as Pay does).
 -- Locking the account too means balance_minor is re-read after waiting for
 -- a payment, instead of being what it was before that payment's award.
-SELECT c.id, c.name, c.account_id, c.currency, c.starts_at, c.ends_at, c.budget_gate, a.balance_minor
+-- gate_degraded_at and db_now come from the database's clock, so they can
+-- be compared with each other.
+SELECT c.id, c.name, c.account_id, c.currency, c.starts_at, c.ends_at, c.budget_gate, c.gate_degraded_at,
+       c.award_increment_minor, now()::timestamptz AS db_now, a.balance_minor
 FROM campaigns c JOIN accounts a ON a.id = c.account_id
 WHERE c.id = $1
 FOR UPDATE OF c, a;

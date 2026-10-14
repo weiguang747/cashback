@@ -47,10 +47,12 @@ type pgStore struct {
 	// like /v1/accounts wait behind them. Extra ones wait here instead,
 	// without a connection.
 	money slots
+	// gate is the Redis budget gate for campaigns that use it.
+	gate *database.CashbackGate
 }
 
-func newPgStore(pool *pgxpool.Pool) pgStore {
-	return pgStore{Queries: db.New(pool), pool: pool, money: newSlots(moneySlots(pool.Config().MaxConns))}
+func newPgStore(pool *pgxpool.Pool, gate *database.CashbackGate) pgStore {
+	return pgStore{Queries: db.New(pool), pool: pool, money: newSlots(moneySlots(pool.Config().MaxConns)), gate: gate}
 }
 
 // moneySlots leaves at least half the pool to everything else.
@@ -89,6 +91,7 @@ func (s pgStore) Pay(ctx context.Context, p database.PayParams) (database.PayRes
 		return database.PayResult{}, err
 	}
 	defer s.money.release()
+	p.Gate = s.gate
 	return database.Pay(ctx, s.pool, p)
 }
 

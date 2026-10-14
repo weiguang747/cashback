@@ -27,10 +27,10 @@ DELETE FROM cashback_pending WHERE payment_transaction_id = $1;
 UPDATE cashback_pending SET failed_at = now(), attempts = attempts + 1
 WHERE payment_transaction_id = $1;
 
--- name: OldestPendingAward :one
--- When the oldest award still waiting to be credited was reserved; NULL when
--- the queue is empty. For the backlog alert.
-SELECT MIN(created_at)::timestamptz AS oldest FROM cashback_pending WHERE failed_at IS NULL;
+-- name: OldestPendingAgeSecs :one
+-- How long the oldest award still waiting to be credited has waited, in
+-- seconds (0 when none is). For the backlog alert.
+SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)::int FROM cashback_pending WHERE failed_at IS NULL;
 
 -- name: CountFailedPendingAwards :one
 SELECT COUNT(*) FROM cashback_pending WHERE failed_at IS NOT NULL;
@@ -46,10 +46,13 @@ SELECT campaign_id, amount_minor FROM cashback_pending WHERE payment_transaction
 -- Which of these payments' reservations reached the database (pending or
 -- credited). The reconciler runs this in the same REPEATABLE READ snapshot
 -- as CampaignBudgetLeft, so the two agree.
-SELECT id::uuid AS payment_transaction_id
-FROM unnest(sqlc.arg('payment_ids')::uuid[]) AS id
-WHERE EXISTS (SELECT 1 FROM cashback_pending p WHERE p.payment_transaction_id = id)
-   OR EXISTS (SELECT 1 FROM cashback_awards ca WHERE ca.payment_transaction_id = id);
+-- The column is always qualified (r.payment_id): a bare name inside the
+-- subqueries would resolve to the subquery's own table first
+-- (cashback_awards.id), silently matching nothing.
+SELECT r.payment_id::uuid AS payment_transaction_id
+FROM unnest(sqlc.arg('payment_ids')::uuid[]) AS r (payment_id)
+WHERE EXISTS (SELECT 1 FROM cashback_pending p WHERE p.payment_transaction_id = r.payment_id)
+   OR EXISTS (SELECT 1 FROM cashback_awards ca WHERE ca.payment_transaction_id = r.payment_id);
 
 -- name: SetBudgetGate :exec
 -- Run with the campaign locked (LockCampaign). Clears the degraded flag:
